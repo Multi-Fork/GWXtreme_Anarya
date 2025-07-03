@@ -17,15 +17,17 @@
 
 
 import typing
-import numpy
-import scipy.stats
-import h5py
+import numpy as np
+
 import lalsimulation
 import lal
 
-largest_ns_mass = 1.97
 
-def eos_p_of_rho(rho,eos):
+LARGEST_NS_MASS = 1.97
+_X_GRID = np.linspace(0., 12.3081, 500)
+
+
+def compute_log_pressure_from_eos(rho, eos):
     '''
     Calculates log10 pressure as a function of density rho
     for any eos.
@@ -33,33 +35,32 @@ def eos_p_of_rho(rho,eos):
     rho     ::     An array of densities in g cm^-3.
     
     eos     ::     A lalsimulation.SimNeurtronStarEOS*
-                   object.
-                   
+                   object.            
     '''
-    
-    FAM=lalsimulation.CreateSimNeutronStarFamily(eos)
+
+    # FAM = lalsimulation.CreateSimNeutronStarFamily(eos)
     p_max_i = min(6e35, lalsimulation.SimNeutronStarEOSMaxPressure(eos))
-    log10_p_grid = numpy.linspace(*numpy.log10([5e31, p_max_i]), 128)
-    p_grid = numpy.power(10.0, log10_p_grid)
-    rho_grid = numpy.empty_like(p_grid)
-    for j, p in numpy.ndenumerate(p_grid):
-                h = lalsimulation.SimNeutronStarEOSPseudoEnthalpyOfPressure(p, eos)
-                rho_grid[j] = (
-                    lalsimulation.SimNeutronStarEOSRestMassDensityOfPseudoEnthalpy(
-                        h, eos,
-                    )
-                )
+    log10_p_grid = np.linspace(*np.log10([5e31, p_max_i]), 128)
+    p_grid = np.power(10.0, log10_p_grid)
+    rho_grid = np.empty_like(p_grid)
+    
+    for j, p in np.ndenumerate(p_grid):
+        h = lalsimulation.SimNeutronStarEOSPseudoEnthalpyOfPressure(p, eos)
+        rho_grid[j] = (lalsimulation.SimNeutronStarEOSRestMassDensityOfPseudoEnthalpy(h, eos,))
 
-
-    log10_rho_grid = numpy.log10(rho_grid)
-    log10_p_out = numpy.interp(
-                numpy.log10(rho), log10_rho_grid, log10_p_grid,
-                left=numpy.NINF, right=numpy.NINF,
-            )
+    log10_rho_grid = np.log10(rho_grid)
+    
+    log10_p_out = np.interp(
+        np.log10(rho), 
+        log10_rho_grid, 
+        log10_p_grid, 
+        left=-np.inf, 
+        right=-np.inf,
+    )
     return log10_p_out
 
 
-def spectral_eos(eos_parameters: tuple) -> typing.Any:
+def create_spectral_eos(eos_parameters: tuple) -> typing.Any:
     '''
     Creates a lalsimulation.SimNeutronStarEOS* object
     for the 4 parameter spectral decomposition (spectral eos)
@@ -71,17 +72,14 @@ def spectral_eos(eos_parameters: tuple) -> typing.Any:
     
     '''
     
-
-    
     gamma1, gamma2, gamma3, gamma4 = eos_parameters
     eos = lalsimulation.SimNeutronStarEOS4ParameterSpectralDecomposition(
         gamma1, gamma2, gamma3, gamma4,
     )
-    
-
     return eos
 
-def polytrope_eos(eos_parameters: tuple) -> typing.Any:
+
+def create_polytrope_eos(eos_parameters: tuple) -> typing.Any:
     '''
     Creates a lalsimulation.SimNeutronStarEOS* object
     for the piece-wise polytropic EoS,  given
@@ -97,12 +95,11 @@ def polytrope_eos(eos_parameters: tuple) -> typing.Any:
     logP1, gamma1, gamma2, gamma3 = eos_parameters
 
     return lalsimulation.SimNeutronStarEOS4ParameterPiecewisePolytrope(
-        logP1,
-        gamma1, gamma2, gamma3,
+        logP1, gamma1, gamma2, gamma3,
     )
 
 
-def spectral_eos_adiabatic_index(x,spectral_parameters):
+def spectral_eos_adiabatic_index(x, spectral_parameters):
     '''
     returns the adiabatic index at a particular value of log pressure,
     using the spectral eos, given a particular choice of spectral
@@ -115,7 +112,7 @@ def spectral_eos_adiabatic_index(x,spectral_parameters):
                             parameters describing the eos
     
     '''
-    
+
     x_sq = x * x
     x_cu = x_sq * x
 
@@ -128,13 +125,7 @@ def spectral_eos_adiabatic_index(x,spectral_parameters):
         gamma4 * x_cu
     )
 
-    return numpy.exp(log_gamma)
-
-
-_x_min = 0.0
-_x_max = 12.3081
-_x_grid = numpy.linspace(_x_min, _x_max, 500)
-
+    return np.exp(log_gamma)
 
 
 def is_valid_adiabatic_index(spectral_parameters: tuple):
@@ -146,10 +137,8 @@ def is_valid_adiabatic_index(spectral_parameters: tuple):
                             parameters describing the eos.
     '''
     
-    Gamma = spectral_eos_adiabatic_index(_x_grid, spectral_parameters)
-    return (0.6 < Gamma).all() and (Gamma < 4.5).all()
-
-
+    adiabatic_index = spectral_eos_adiabatic_index(_X_GRID, spectral_parameters)
+    return (adiabatic_index > 0.6).all() and (adiabatic_index < 4.5).all()
 
 
 def has_enough_points(eos: typing.Any) -> bool:
@@ -166,14 +155,14 @@ def has_enough_points(eos: typing.Any) -> bool:
     min_points = 8
 
     logpmin = 75.5
-    logpmax = numpy.log(lalsimulation.SimNeutronStarEOSMaxPressure(eos))
+    logpmax = np.log(lalsimulation.SimNeutronStarEOSMaxPressure(eos))
 
     dlogp = (logpmax - logpmin) / 100
 
     m_prev = 0.0
 
     for i in range(min_points):
-        p = numpy.exp(logpmin + i*dlogp)
+        p = np.exp(logpmin + i*dlogp)
 
         r, m, k = lalsimulation.SimNeutronStarTOVODEIntegrate(p, eos)
 
@@ -220,8 +209,7 @@ def is_causal_eos(eos: typing.Any, eos_fam: typing.Any) -> bool:
 
     # Confirm that the sound speed is less than speed of light, with an added
     # buffer (10%) to account for imperfect modeling.
-    c_buffer = 0.1
-    return c_max < (1.0 + c_buffer)
+    return c_max < 1.10
 
 
 def eos_mass_range(eos_fam: typing.Any) -> typing.Tuple[float,float]:
@@ -238,17 +226,14 @@ def eos_mass_range(eos_fam: typing.Any) -> typing.Tuple[float,float]:
     return m_min / lal.MSUN_SI, m_max / lal.MSUN_SI
 
 
-
 #########################
 #  Combined EoS Priors  #
 #########################
-
-
-
-
 def is_valid_eos(
-        parameters, prior_settings,
-        spectral=True, largest_ns_mass=largest_ns_mass,
+        parameters, 
+        prior_settings,
+        spectral=True, 
+        largest_ns_mass=LARGEST_NS_MASS,
         require_mass_ranges=None,
     ):
     
@@ -279,65 +264,49 @@ def is_valid_eos(
                               
     '''
                           
-    if(spectral):
-        
-        gamma1, gamma2, gamma3, gamma4 = parameters['gamma1'],parameters['gamma2'],parameters['gamma3'],parameters['gamma4']
+    if spectral:
+        gamma1, gamma2, gamma3, gamma4 = parameters['gamma1'], parameters['gamma2'], parameters['gamma3'], parameters['gamma4']
 
         params_shape = gamma1.shape
 
         valid = (
-        (gamma1 >= prior_settings["gamma1"]["params"]["min"]) &
-        (gamma1 <= prior_settings["gamma1"]["params"]["max"]) &
-        (gamma2 >= prior_settings["gamma2"]["params"]["min"]) &
-        (gamma2 <= prior_settings["gamma2"]["params"]["max"]) &
-        (gamma3 >= prior_settings["gamma3"]["params"]["min"]) &
-        (gamma3 <= prior_settings["gamma3"]["params"]["max"]) &
-        (gamma4 >= prior_settings["gamma4"]["params"]["min"]) &
-        (gamma4 <= prior_settings["gamma4"]["params"]["max"])
-    )
+            (gamma1 >= prior_settings["gamma1"]["params"]["min"]) &
+            (gamma1 <= prior_settings["gamma1"]["params"]["max"]) &
+            (gamma2 >= prior_settings["gamma2"]["params"]["min"]) &
+            (gamma2 <= prior_settings["gamma2"]["params"]["max"]) &
+            (gamma3 >= prior_settings["gamma3"]["params"]["min"]) &
+            (gamma3 <= prior_settings["gamma3"]["params"]["max"]) &
+            (gamma4 >= prior_settings["gamma4"]["params"]["min"]) &
+            (gamma4 <= prior_settings["gamma4"]["params"]["max"])
+        )
 
-        for i in numpy.ndindex(*params_shape):
+        for i in np.ndindex(*params_shape):
             # Skip already invalidated samples
             if not valid[i]:
                 continue
 
-            parameters_at_i = {
-                param_name : values[i]
-                for param_name, values in parameters.items()
-        }
             spectral_parameters_at_i = (gamma1[i], gamma2[i], gamma3[i], gamma4[i])
-
-            
 
             try:
                 if not is_valid_adiabatic_index(spectral_parameters_at_i):
-                    G = spectral_eos_adiabatic_index(
-                        _x_grid, spectral_parameters_at_i,
-                    )
-                    
                     valid[i] = False
                     continue
 
-                eos_at_i = spectral_eos(spectral_parameters_at_i)
+                eos_at_i = create_spectral_eos(spectral_parameters_at_i)
 
                 if not has_enough_points(eos_at_i):
-                    
                     valid[i] = False
                     continue
 
-                
                 eos_fam_at_i = lalsimulation.CreateSimNeutronStarFamily(eos_at_i)
                 
-
                 if not is_causal_eos(eos_at_i, eos_fam_at_i):
-                    
                     valid[i] = False
                     continue
 
                 eos_m_min, eos_m_max = eos_mass_range(eos_fam_at_i)
 
                 if eos_m_max < largest_ns_mass:
-                    
                     valid[i] = False
                     continue
 
@@ -346,11 +315,10 @@ def is_valid_eos(
                 if require_mass_ranges is not None:
                     for m_mins, m_maxs in require_mass_ranges:
                         if m_mins[i] >= eos_m_max:
-                            
                             valid[i] = False
                             continue
-                        if m_maxs[i] <= eos_m_min:
-                            
+                        
+                        if m_maxs[i] <= eos_m_min:    
                             valid[i] = False
                             continue
 
@@ -358,64 +326,46 @@ def is_valid_eos(
                 if str(e) != "Generic failure":
                     raise
                 else:
-                    
                     valid[i] = False
     else:
-        
-        logP, gamma1, gamma2, gamma3 =  parameters["logP"],\
-            parameters['gamma1'],\
-            parameters['gamma2'],\
-            parameters['gamma3']
+        logP, gamma1, gamma2, gamma3 =  parameters["logP"], parameters['gamma1'], parameters['gamma2'], parameters['gamma3']
 
         params_shape = logP.shape
 
         valid = (
-        (logP >= prior_settings["logP"]["params"]["min"]) &
-        (logP <= prior_settings["logP"]["params"]["max"]) &
-        (gamma1 >= prior_settings["gamma1"]["params"]["min"]) &
-        (gamma1 <= prior_settings["gamma1"]["params"]["max"]) &
-        (gamma2 >= prior_settings["gamma2"]["params"]["min"]) &
-        (gamma2 <= prior_settings["gamma2"]["params"]["max"]) &
-        (gamma3 >= prior_settings["gamma3"]["params"]["min"]) &
-        (gamma3 <= prior_settings["gamma3"]["params"]["max"])
-    )
+            (logP >= prior_settings["logP"]["params"]["min"]) &
+            (logP <= prior_settings["logP"]["params"]["max"]) &
+            (gamma1 >= prior_settings["gamma1"]["params"]["min"]) &
+            (gamma1 <= prior_settings["gamma1"]["params"]["max"]) &
+            (gamma2 >= prior_settings["gamma2"]["params"]["min"]) &
+            (gamma2 <= prior_settings["gamma2"]["params"]["max"]) &
+            (gamma3 >= prior_settings["gamma3"]["params"]["min"]) &
+            (gamma3 <= prior_settings["gamma3"]["params"]["max"])
+        )
 
-        for i in numpy.ndindex(*params_shape):
+        for i in np.ndindex(*params_shape):
             # Skip already invalidated samples
             if not valid[i]:
                 continue
 
-            parameters_at_i = {
-                param_name : values[i]
-                for param_name, values in parameters.items()
-        }
             polytropic_parameters_at_i = (logP[i], gamma1[i], gamma2[i], gamma3[i])
 
-            
-
             try:
-                
-
-                eos_at_i = polytrope_eos(polytropic_parameters_at_i)
+                eos_at_i = create_polytrope_eos(polytropic_parameters_at_i)
 
                 if not has_enough_points(eos_at_i):
-                    
                     valid[i] = False
                     continue
 
-                
                 eos_fam_at_i = lalsimulation.CreateSimNeutronStarFamily(eos_at_i)
-                
 
                 if not is_causal_eos(eos_at_i, eos_fam_at_i):
-                    
                     valid[i] = False
                     continue
 
                 eos_m_min, eos_m_max = eos_mass_range(eos_fam_at_i)
 
                 if eos_m_max < largest_ns_mass:
-                    
                     valid[i] = False
                     continue
 
@@ -424,11 +374,10 @@ def is_valid_eos(
                 if require_mass_ranges is not None:
                     for m_mins, m_maxs in require_mass_ranges:
                         if m_mins[i] >= eos_m_max:
-                            
                             valid[i] = False
                             continue
-                        if m_maxs[i] <= eos_m_min:
-                            
+                        
+                        if m_maxs[i] <= eos_m_min:    
                             valid[i] = False
                             continue
 
@@ -436,6 +385,5 @@ def is_valid_eos(
                 if str(e) != "Generic failure":
                     raise
                 else:
-                    
                     valid[i] = False
     return valid

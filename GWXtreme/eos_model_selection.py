@@ -18,579 +18,196 @@
 from __future__ import division, print_function
 
 import os
-import sys
 import json
 import multiprocessing
+from typing import Literal, Sequence
+import pathlib
 
 import ray
 import numpy as np
-from scipy.interpolate import interp1d
 import h5py
 
-import lal
-import lalsimulation as lalsim
-
-from .bounded_2d_kde import Bounded_2d_kde
-from .bounded_3d_kde import Bounded_3d_kde
+from .density_estimation import BoundedKDE
+from .utils import *
 
 
-def getMasses(q, mc):
-    '''
-    Given chirp-mass and mass ratio, compute the individual masses
-    '''
-    m1 = mc * (1 + q)**(1/5) * (q)**(-3/5)
-    m2 = mc * (1 + q)**(1/5) * (q)**(2/5)
-    return (m1, m2)
-
-
-def getLambdaT(m1, m2, Lambda1, Lambda2):
-    '''
-    This function converts the Lambda1, Lambda2, mass1, mass2
-    to Lambda tilde.
-    '''
-    LambdaTilde = (2**5)/(26*(m1 + m2)**5)
-    LambdaTilde *= (m1**5 + 12*m2*m1**4)*Lambda1 +\
-                   (m2**5 + 12*m1*m2**4)*Lambda2
-    return LambdaTilde
-
-
-def get_LambdaT_for_eos(m1, m2, max_mass_eos, eosfunc):
-    '''
-    This function accepts the masses and an equation of state interpolant
-    with its maximum allowed mass, and return the values of LambdaT.
-    '''
-    kerr_cases_1 = m1 >= max_mass_eos
-    kerr_cases_2 = m2 >= max_mass_eos
-
-    Lambda1 = np.zeros_like(m1)
-    Lambda2 = np.zeros_like(m2)
-
-    # interpolate from known curves to obtain tidal
-    # deformabilities as a function of mass for the
-    # rest of the points
-    Lambda1[~kerr_cases_1] = eosfunc(m1[~kerr_cases_1])
-    Lambda2[~kerr_cases_2] = eosfunc(m2[~kerr_cases_2])
-
-    # compute chirp tidal deformability
-    LambdaT = getLambdaT(m1, m2, Lambda1, Lambda2)
-
-    return LambdaT
-
-def get_Lambda_for_eos(m,max_mass_eos, eosfunc):
-    '''
-    This function accepts the mass and an equation of state interpolant
-    with its maximum allowed mass, and return the values of Lambda.
-    '''
-    kerr_cases = m >= max_mass_eos
-
-
-    Lambda = np.zeros_like(m)
-
-
-    # interpolate from known curves to obtain tidal
-    # deformabilities as a function of mass for the
-    # rest of the points
-    Lambda[~kerr_cases] = eosfunc(m[~kerr_cases])
-    return Lambda
-
-# The integrator function #
-def integrator(q_min, q_max, mc, eosfunc, max_mass_eos, postfunc,
-               gridN=1000, var_LambdaT=1.0, var_Lambda1=1, var_Lambda2=1.0, var_q=1.0, var_logq = 1, minMass=0.1,kdedim=2,logq=False):
-    '''
-    This function numerically integrates the KDE along the
-    EoS curve.
-
-    q_min  	:: Minimum value of mass-ratio for the EoS curve
-
-    q_max  	:: Maximum value of mass-ratio for the EoS curve
-
-    mc	:: Chirp mass (fixed to mean value of posterior)
-
-    eosfunc	 :: interpolation function of Λ = eosfunc(m)
-
-    max_mass_eos :: Maximum mass allowed by the EoS.
-
-    postfunc :: K(Λ, q) KDE of the posterior distr
-
-    gridN  :: Number of steps for the integration (default=1K)
-
-    var_LambdaT :: Standard deviation of the LambdT
-
-    var_q  :: Standard deviation of the mass-ratio
-
-    minMass :: The value of the minimum mass for the lines integration
-
-    If for the choice of mass-ratio and mc, the masses of one
-    or both the object goes above the maximum mass of NS
-    allowed by the EoS, then the object(s) is(are) treated as
-    BH (Λ=0). If the masses are below the minimum mass, the
-    points are excludeds from the integral.
-
-    '''
-    # scale these appropriately to evaluate prior bounds
-    q_min *= var_q
-    q_max *= var_q
-
-    # get values for line integral
-    q = np.linspace(q_min, q_max, gridN)
-    m1, m2 = getMasses(q, mc)
-
-    m1, m2, q = apply_mass_constraint(m1, m2, q, minMass)
-    
-    if kdedim == 2:
-        LambdaT = get_LambdaT_for_eos(m1, m2, max_mass_eos, eosfunc)
-
-        # scale things back so they make sense with the KDE
-        LambdaT_scaled, q_scaled, logq_scaled = LambdaT/var_LambdaT, q/var_q, np.log(q)/var_logq
-
-        # perform integration via trapazoidal approximation
-        dq = np.diff(q)
-        f = postfunc.evaluate(np.vstack((LambdaT_scaled, (q_scaled if not logq else logq_scaled))).T)/ (1 if not logq else q)
-        f_centers = 0.5*(f[1:] + f[:-1])
-        int_element = f_centers * dq 
-
-        return [LambdaT_scaled, q_scaled, np.sum(int_element)]
-    
-    elif(kdedim==3):
-        Lambda1,Lambda2 = get_Lambda_for_eos(m1, max_mass_eos, eosfunc),get_Lambda_for_eos(m2, max_mass_eos, eosfunc)
-
-        # scale things back so they make sense with the KDE
-        Lambda1_scaled,Lambda2_scaled, q_scaled, logq_scaled = Lambda1/var_Lambda1,Lambda2/var_Lambda2 ,q/var_q, np.log(q)/var_logq
-
-        # perform integration via trapazoidal approximation
-        dq = np.diff(q)
-        f = postfunc.evaluate(np.vstack((Lambda1_scaled, (q_scaled if not logq else logq_scaled),Lambda2_scaled)).T)/ (1 if not logq else q)
-        f_centers = 0.5*(f[1:]+f[:-1])
-        int_element = f_centers * dq
-        LambdaT_scaled=getLambdaT(m1,m2,Lambda1_scaled,Lambda2_scaled)
-        return [LambdaT_scaled, q_scaled ,np.sum(int_element)]
-    else:
-        raise ValueError("kde can only be 2 or 3 dimensional")
-        
-def apply_mass_constraint(m1, m2, q, minMass):
-    '''
-    Apply constraints on masses based on the prior or posterior sample
-    spread.
-    '''
-    min_mass_violation_1 = m1 < minMass
-    min_mass_violation_2 = m2 < minMass
-    min_mass_violation = min_mass_violation_1 + min_mass_violation_2
-    m1 = m1[~min_mass_violation]
-    m2 = m2[~min_mass_violation]
-    q = q[~min_mass_violation]
-    return (m1, m2, q)
-
-@ray.remote
-def get_trials(fd):
-    support2D1_list = []
-    support2D2_list = []
-    for ii in range(fd['trials']):
-
-        # generate new (synthetic) data
-        new_margPostData = np.array([])
-        counter = 0
-        while len(new_margPostData) < len(fd['margPostData']):
-            prune_adjust_factor = 1.1 + counter/10.
-            N_resample = int(len(fd['margPostData'])*prune_adjust_factor)
-            new_margPostData = fd['kde'].resample(size=N_resample).T
-            unphysical = (new_margPostData[:, 0] < 0) +\
-                         (new_margPostData[:, 1] > (fd['yhigh'] if not fd['logq'] else fd['logyhigh']) ) +\
-                         (new_margPostData[:, 1] < 0)
-            new_margPostData = new_margPostData[~unphysical]
-            print("Count: {}".format(counter))
-            counter += 1
-        indices = np.arange(len(new_margPostData))
-        chosen = np.random.choice(indices, len(fd['margPostData']))
-        new_margPostData = new_margPostData[chosen]
-
-        # generate a new kde
-        if fd['kdedim'] == 2:
-            new_kde = Bounded_2d_kde(new_margPostData, xlow=0.0,
-                                     xhigh=None, ylow=0.0,
-                                     yhigh=(fd['yhigh'] if not fd['logq'] else fd['logyhigh']),
-                                     bw=fd['bw'])
-        elif fd['kdedim'] == 3:
-            new_kde = Bounded_3d_kde(new_margPostData,
-                                     low=[0.0,0.0,0.0],
-                                     high=[np.inf,(fd['yhigh'] if not fd['logq'] else fd['logyhigh']),np.inf])   
-
-       # integrate to get support
-        [this_lambdat_eos1, this_q_eos1,
-         this_support2D1] = integrator(fd['q_min'], fd['q_max'],
-                                       fd['mc_mean'], fd['s1'],
-                                       fd['max_mass_eos1'], new_kde,
-                                       gridN=fd['gridN'],
-                                       var_LambdaT=fd['var_LambdaT'],
-                                       var_q=fd['var_q'],
-                                       minMass=fd['minMass'],
-                                       kdedim=fd['kdedim'],
-                                       var_Lambda1=fd['var_Lambda1'],
-                                       var_Lambda2=fd['var_Lambda2'],
-                                       var_logq = fd['var_logq'],
-                                       logq=fd['logq'])
-        [this_lambdat_eos2, this_q_eos2,
-         this_support2D2] = integrator(fd['q_min'], fd['q_max'],
-                                       fd['mc_mean'], fd['s2'],
-                                       fd['max_mass_eos2'], new_kde,
-                                       gridN=fd['gridN'],
-                                       var_LambdaT=fd['var_LambdaT'],
-                                       var_q=fd['var_q'],
-                                       minMass=fd['minMass'],
-                                       kdedim=fd['kdedim'],
-                                       var_Lambda1=fd['var_Lambda1'],
-                                       var_Lambda2=fd['var_Lambda2'],
-                                       var_logq = fd['var_logq'],
-                                       logq=fd['logq'])
-
-        # store the result
-        support2D1_list.append(this_support2D1)
-        support2D2_list.append(this_support2D2)
-
-    sup_array = np.array(support2D1_list)/np.array(support2D2_list)
-    return sup_array
-
-
-class Model_selection:
-    def __init__(self, posteriorFile, priorFile=None, spectral=False,Ns=None,kdedim=2,logq=False):
+class ModelSelector:
+    def __init__(
+            self, 
+            posterior_file: str, 
+            prior_file: str | None = None,
+            method: Literal['2D', '3D'] = '2D',
+            density_est_method: Literal['kde', 'flow'] = 'kde',
+            N_samples: int | None = None,
+            parameterization: Literal['spectral', 'polytrope'] = 'spectral'
+        ):
         '''
         Initiates the Bayes factor calculator with the posterior
-        samples from the uniform LambdaT, dLambdaT parameter
+        samples from the uniform lambdat, dlambdat parameter
         estimation runs.
 
-        posteriorFile :: The full path to the posterior_samples.dat
+        posterior_file :: The full path to the posterior_samples.dat
                          file
 
-        priorFile     :: The full path to the priors file (optional).
+        prior_file     :: The full path to the priors file (optional).
                          If the prior file is supplied, the mass
                          boundaries for the KDE computation is
                          obtained from the prior file. If this is not
                          supplied, the posterior samples will be used
                          to determine the bounds.
-
-        spectral      :: Distinguishes between piecewise polytrope and spectral 
-                         decomposition method.
-                         
-        Ns            :: Number of Samples to be used for KDE. (Using all samples 
-                         from PE will make it very slow)
-
-        kdedim        :: dimensionality of the KDE
-                         
         '''
-        if(posteriorFile[-2:]=='h5'):
-            f=h5py.File(posteriorFile,'r')
-            _data=np.array(f[wf]['posterior_samples'])
-            f.close()
-            if kdedim==2:
-                (m1,m2,q,mc,LambdaT)=(np.array(_data['mass_1_source']),
-                                        np.array(_data['mass_2_source']),
-                                        np.array(_data['mass_ratio']),
-                                        np.array(_data['chirp_mass_source']),
-                                        np.array(_data['lambda_tilde']))
-                lambda_1,lambda_2 = None,None
-            else:
-                (m1,m2,q,mc,lambda_1,lambda_2)=(np.array(_data['mass_1_source']),
-                                                np.array(_data['mass_2_source']),
-                                                np.array(_data['mass_ratio']),
-                                                np.array(_data['chirp_mass_source']),
-                                                np.array(_data['lambda_1']),
-                                                np.array(_data['lambda_2']))
-                LambdaT=None 
-
-        elif(posteriorFile[-3:]=='txt'):
-            _data = np.loadtxt(posteriorFile)
-            if kdedim==2:
-                (m1,m2,q,mc,LambdaT)=(np.array(_data[0]),
-                                        np.array(_data[1]),
-                                        np.array(_data[2]),
-                                        np.array(_data[3]),
-                                        np.array(_data[4]))
-                lambda_1,lambda_2 = None,None
-            else:
-                (m1,m2,q,mc,lambda_1,lambda_2)=(np.array(_data[0]),
-                                                np.array(_data[1]),
-                                                np.array(_data[2]),
-                                                np.array(_data[3]),
-                                                np.array(_data[4]),
-                                                np.array(_data[5]))
-                LambdaT=None 
-
-        elif(posteriorFile[-4:]=='json'):
-            with open(posteriorFile,"r") as f:
-                _data = json.load(f)['posterior']['content']
-            if kdedim==2:
-                (m1,m2,q,mc,LambdaT)=(np.array(_data['m1_source']),
-                                        np.array(_data['m2_source']),
-                                        np.array(_data['q']),
-                                        np.array(_data['mc_source']),
-                                        np.array(_data['lambdat']))
-                lambda_1,lambda_2 = None,None
-            else:
-                (m1,m2,q,mc,lambda_1,lambda_2)=(np.array(_data['m1_source']),
-                                                np.array(_data['m2_source']),
-                                                np.array(_data['q']),
-                                                np.array(_data['mc_source']),
-                                                np.array(_data['lambda_1']),
-                                                np.array(_data['lambda_2']))
-                LambdaT=None 
-
-        else:
-            _data = np.recfromtxt(posteriorFile, names=True)
-            if kdedim==2:
-                (m1,m2,q,mc,LambdaT)=(np.array(_data['m1_source']),
-                                        np.array(_data['m2_source']),
-                                        np.array(_data['q']),
-                                        np.array(_data['mc_source']),
-                                        np.array(_data['lambdat']))
-                lambda_1,lambda_2 = None,None
-            else:
-                (m1,m2,q,mc,lambda_1,lambda_2)=(np.array(_data['m1_source']),
-                                        np.array(_data['m2_source']),
-                                        np.array(_data['q']),
-                                        np.array(_data['mc_source']),
-                                        np.array(_data['lambda_1']),
-                                        np.array(_data['lambda_2']))
-                LambdaT=None
-        data={'m1_source':m1,'m2_source':m2,'q':q,'mc_source':mc,'lambdat':LambdaT,'lambda1':lambda_1, 'lambda2':lambda_2}
-        data = {k:v for k, v in data.items() if v is not None}
-        Ns_orig = len(q)
-        if(Ns is None or Ns>Ns_orig):
-            Ns = Ns_orig #By default we use all the posterior samples without thinning
-        self.data = {k:data[k][0::int(Ns_orig/Ns)] for k in list(data.keys())}
+        self.method = method
+        self.density_est_method = density_est_method
+        self.parameterization = parameterization
+        self.isBBH = False
         
-        if priorFile:
-            self.prior = np.recfromtxt(priorFile, names=True)
-            self.minMass = np.min(self.prior['m2_source'])
-            self.maxMass = np.max(self.prior['m1_source'])
+        m1, m2, q, mc, lambda1, lambda2, lambdat = self._read_posterior_file(posterior_file)
+        data = {
+            'm1_source': m1,
+            'm2_source': m2,
+            'q': q,
+            'mc_source': mc,
+            'lambdat': lambdat,
+            'lambda1': lambda1,
+            'lambda2': lambda2
+        }
+        data = {k:v for k, v in data.items() if v is not None}
+        
+        N_samples_original = len(self.data['q'])
+        if N_samples is None or N_samples > N_samples_original:
+            N_samples = N_samples_original # By default we use all the posterior samples without thinning
+        
+        # Thin samples
+        self.data = {k:data[k][::int(N_samples_original/N_samples)] for k in list(data.keys())}
+        
+        if prior_file:
+            self.prior = np.genfromtxt(prior_file, names=True)
+            self.min_mass = np.min(self.prior['m2_source'])
+            self.max_mass = np.max(self.prior['m1_source'])
             self.q_max = np.max(self.prior['q'])
             self.q_min = np.min(self.prior['q'])
         else:
             self.prior = None
-            self.minMass = np.min(self.data['m2_source'])  # min posterior mass
-            self.maxMass = np.max(self.data['m1_source'])  # max posterior mass
+            self.min_mass = np.min(self.data['m2_source'])  # min posterior mass
+            self.max_mass = np.max(self.data['m1_source'])  # max posterior mass
             self.q_max = np.max(self.data['q'])
             self.q_min = np.min(self.data['q'])
+        
         self.m_min=0.8
-        # store useful parameters
-        self.mc_mean = np.mean(self.data['mc_source'])
-        self.kdedim=kdedim
-        self.logq = logq
-
-        # whiten data and compute KDE
-        self.var_q = np.std(self.data['q'])
-        self.var_logq = np.std(np.log(self.data['q']))
         
-        self.q_max /= self.var_q
-        self.q_min /= self.var_q
-        self.yhigh = 1.0/self.var_q  # For reflection boundary condition
-        self.logyhigh=0.
-        if self.kdedim==2:
-            self.var_LambdaT = np.std(self.data['lambdat'])
-            self.var_Lambda1 = 1.0
-            self.var_Lambda2 = 1.0
-            if not self.logq:
-                self.margPostData = np.vstack((self.data['lambdat']/self.var_LambdaT,
-                                           self.data['q']/self.var_q)).T
-            else:
-                self.margPostData = np.vstack((self.data['lambdat']/self.var_LambdaT,
-                                           np.log(self.data['q'])/self.var_logq)).T
+        if self.method == '2D':
+            self.marginal_posterior = np.vstack(
+                (
+                    self.data['lambdat'],
+                    self.data['q']
+                )
+            ).T
                 
-            self.bw = len(self.margPostData)**(-1/6.)  # Scott's bandwidth factor
+            if self.density_est_method == 'kde':
+                self.density_estimator = BoundedKDE(
+                    self.marginal_posterior,
+                    low=[0.,      self.q_min],
+                    high=[np.inf, 1.        ]
+                )
+            
+            elif self.density_est_method == 'flow':
+                # TODO
+                self.density_estimator = None
+                
+        elif self.method == '3D':
+            self.marginal_posterior = np.vstack(
+                (
+                    self.data['lambda1'],
+                    self.data['q'],
+                    self.data['lambda2']
+                )
+            ).T
 
-            # Compute the KDE for the marginalized posterior distribution #
-            self.kde = Bounded_2d_kde(self.margPostData,
-                                      xlow=0.0,
-                                      xhigh=None,
-                                      ylow=None,
-                                      yhigh=(self.yhigh if not self.logq else self.logyhigh))
-        elif self.kdedim==3:
-            self.var_Lambda1 = np.std(self.data['lambda1'])
-            self.var_Lambda2 = np.std(self.data['lambda2'])
-            self.var_LambdaT = 1.0
-            if not self.logq:
-                self.margPostData = np.vstack((self.data['lambda1']/self.var_Lambda1,
-self.data['q']/self.var_q,self.data['lambda2']/self.var_Lambda2)).T
-            else:
-                self.margPostData = np.vstack((self.data['lambda1']/self.var_Lambda1,
-np.log(self.data['q'])/self.var_logq,self.data['lambda2']/self.var_Lambda2)).T
-            #Calculate kde bandwidth
-            self.bw = len(self.margPostData)**(-1/6.)  # Scott's bandwidth factor
-            # Compute the KDE for the marginalized posterior distribution #
-            self.var_LambdaT=1.0
-            self.kde = Bounded_3d_kde(self.margPostData,
-                                  low=[0.0,0.0,0.0],
-                                  high=[np.inf,(self.yhigh if not self.logq else self.logyhigh), np.inf])   
-        # Attribute that distinguishes parametrization method
-        self.spectral = spectral
+            if self.density_est_method == 'kde':
+                self.density_estimator = BoundedKDE(
+                    self.marginal_posterior,
+                    low=[0.,      self.q_min , 0.    ], # q_min or 0?
+                    high=[np.inf, 1. ,         np.inf]
+                )
+            elif self.density_est_method == 'flow':
+                # TODO
+                self.density_estimator = None
 
-        self.isBBH = False
-
-    def getEoSInterp(self, eosname=None, m_min=1.0, N=100):
+    def integrate_posterior_for_eos_support(
+            self,
+            eosfunc,
+            max_mass_eos,
+            N_grid=1000,
+            min_mass=0.1,
+            density_estimator=None
+        ):
         '''
-        This method accepts one of the NS native equations of state
-        and uses that to return a list [s, mass, Λ, max_mass] where
-        s is the interpolation function for the mass and the tidal
-        deformability.
+        This function numerically integrates the KDE along the
+        EoS curve.
 
-        eosname     :: Equation of state native to LALsuite
+        eosfunc	 :: interpolation function of Λ = eosfunc(m)
 
-        m_min       :: The minimum mass of the NS from which value
-                       the interpolant will be constructed
-                       (default = 1.0).
+        max_mass_eos :: Maximum mass allowed by the EoS.
 
-        N           :: Number of points that will be used for the
-                       construction of the interpolant.
+        N_grid  :: Number of steps for the integration (default=1K)
+
+        var_lambdat :: Standard deviation of the LambdT
+
+        var_q  :: Standard deviation of the mass-ratio
+
+        min_mass :: The value of the minimum mass for the lines integration
+
+        If for the choice of mass-ratio and mc, the masses of one
+        or both the object goes above the maximum mass of NS
+        allowed by the EoS, then the object(s) is(are) treated as
+        BH (Λ=0). If the masses are below the minimum mass, the
+        points are excludeds from the integral.
+
         '''
+        if density_estimator is None:
+            density_estimator = self.density_estimator
 
-        if eosname is None:
-            print('Allowed equation of state models are:')
-            print(lalsim.SimNeutronStarEOSNames)
-            print('Pass the model name as a string')
-            return None
-        try:
-            assert eosname in list(lalsim.SimNeutronStarEOSNames)
-        except AssertionError:
-            print('EoS family is not available in lalsimulation')
-            print('Allowed EoS are :\n' + str(lalsim.SimNeutronStarEOSNames))
-            print('Make sure that if you are passing a custom file, it exists')
-            print('in the path that you have provided...')
-            sys.exit(0)
+        # get values for line integral
+        q = np.linspace(self.q_min, self.q_max, N_grid)
+        m1, m2 = get_masses(q, self.data['mc_source'])
 
-        eos = lalsim.SimNeutronStarEOSByName(eosname)
-        fam = lalsim.CreateSimNeutronStarFamily(eos)
-        max_mass = lalsim.SimNeutronStarMaximumMass(fam)/lal.MSUN_SI
+        m1, m2, q = apply_mass_constraint(m1, m2, q, min_mass)
+        
+        if self.method == '2D':
+            lambdat = get_lambdat_for_eos(m1, m2, max_mass_eos, eosfunc)
 
-        # This is necessary so that interpolant is computed over the full range
-        # Keeping number upto 3 decimal places
-        # Not rounding up, since that will lead to RuntimeError
-        max_mass = int(max_mass*1000)/1000
+            # perform integration via trapezoidal approximation
+            dq = np.diff(q)
+            f = self.density_estimator.evaluate(np.vstack((lambdat, q)).T)
+            f_centers = 0.5*(f[1:] + f[:-1])
+            int_element = f_centers * dq 
 
-        if max_mass < m_min: # if max_mass of EoS is smaller than population's min mass, they're all BBHs
-            self.isBBH = True # if definition of max_mass or m_min is changed in the future, adjust this logic accordingly
-            return [np.nan,np.nan,np.nan,np.nan]
+            return [lambdat, q, np.sum(int_element)]
+        
+        elif self.method == '3D':
+            lambda1, lambda2 = get_lambda_for_eos(m1, max_mass_eos, eosfunc), get_lambda_for_eos(m2, max_mass_eos, eosfunc)
 
-        masses = np.linspace(m_min, max_mass, N)
-        masses = masses[masses <= max_mass]
-        Lambdas = []
-        gravMass = []
-        for m in masses:
-            try:
-                rr = lalsim.SimNeutronStarRadius(m*lal.MSUN_SI, fam)
-                kk = lalsim.SimNeutronStarLoveNumberK2(m*lal.MSUN_SI, fam)
-                cc = m*lal.MRSUN_SI/rr
-                Lambdas = np.append(Lambdas, (2/3)*kk/(cc**5))
-                gravMass = np.append(gravMass, m)
-            except RuntimeError:
-                break
-        Lambdas = np.array(Lambdas)
-        gravMass = np.array(gravMass)
-        s = interp1d(gravMass, Lambdas)
-
-        return [s, gravMass, Lambdas, max_mass]
-
-    def getEoSInterpFromMLambdaFile(self, tidalFile):
-        '''
-        This method accepts the data from a file that have the
-        tidal deformability information in the following format:
-
-        #mass    	λ
-
-        ...	    	...
-
-        ...		    ...
-
-        max_mass	...
-
-        The values of masses should be in units of solar masses. The
-        tidal deformability λ should be supplied in SI unit.
-
-        The method computes the dimensionless tidal deformabiliy Λ and
-        returns a list [s, mass, Λ, max_mass] where s is the interpolation
-        function for the mass and the tidal deformability.
-        '''
-        masses, lambdas = np.loadtxt(tidalFile, unpack=True)
-        # self.minMass = np.min(masses)
-        Lambdas = lal.G_SI*lambdas*(1/(lal.MRSUN_SI*masses)**5)
-        s = interp1d(masses, Lambdas)
-        max_mass = np.max(masses)
-        return [s, masses, Lambdas, max_mass]
-
-    def getEoSInterpFromMRFile(self, MRFile):
-        '''
-        This method accepts the data from a file that have the
-        mass-radius-love deformability information in the following format:
-
-        #mass		Radius       love_num
-
-        ...	    	...          ...
-
-        ...		...          ...
-
-        max_mass	...          ...
-
-        The values of masses should be in units of solar masses. The
-        tidal deformability radius should be supplied in meters.
-
-        The method computes the dimensionless tidal deformabiliy Λ and
-        returns a list [s, mass, Λ, max_mass] where s is the interpolation
-        function for the mass and the tidal deformability.
-        '''
-        masses, radius, kappa = np.loadtxt(MRFile, unpack=True)
-        # self.minMass = np.min(masses)
-        compactness = masses*lal.MRSUN_SI/radius
-        Lambdas = (2/3)*kappa/(compactness**5)
-        s = interp1d(masses, Lambdas)
-        max_mass = np.max(masses)
-        return [s, masses, Lambdas, max_mass]
-
-    def getEoSInterp_parametrized(self, params, N=100,m_min=0.8):
-        '''
-        This method accepts a four parameter description of the neutron star 
-        equation of state, and returns a list [s, m_min, max_mass] where s is 
-        the interpolation function for the mass and the tidal deformability.
-
-        params      :: Four parameter list.
-
-        N           :: Number of points that will be used for the
-                       construction of the interpolant.
-        '''
-
-        if not self.spectral :
-            log_p1_SI, g1, g2, g3 = params
-            eos = lalsim.SimNeutronStarEOS4ParameterPiecewisePolytrope(log_p1_SI, g1, g2, g3)
+            # perform integration via trapezoidal approximation
+            dq = np.diff(q)
+            f = self.density_estimator.evaluate(np.vstack((lambda1, q, lambda2)).T)
+            f_centers = 0.5*(f[1:]+f[:-1])
+            int_element = f_centers * dq
+            lambdat = get_lambdat(m1, m2, lambda1, lambda2)
+            
+            return [lambdat, q ,np.sum(int_element)]
+        
         else:
-            g0, g1, g2, g3 = params
-            eos = lalsim.SimNeutronStarEOS4ParameterSpectralDecomposition(g0, g1, g2, g3)
+            raise ValueError(f'Invalid: self.method = {self.method} is not in ["2D", "3D"]')
 
-        fam = lalsim.CreateSimNeutronStarFamily(eos)
-        max_mass = lalsim.SimNeutronStarMaximumMass(fam)/lal.MSUN_SI
-        
-        # This is necessary so that interpolant is computed over the full range
-        # Keeping number upto 3 decimal places
-        # Not rounding up, since that will lead to RuntimeError
-        min_mass=m_min
-        max_mass = int(max_mass*1000)/1000
-        min_mass = int(min_mass*1000+1)/1000
-        masses = np.linspace(max(m_min,min_mass), max_mass, N)
-        masses = masses[masses <= max_mass]
-        Lambdas = []
-        gravMass = []
-        for m in masses:
-            try:
-                rr = lalsim.SimNeutronStarRadius(m*lal.MSUN_SI, fam)
-                kk = lalsim.SimNeutronStarLoveNumberK2(m*lal.MSUN_SI, fam)
-                cc = m*lal.MRSUN_SI/rr
-                Lambdas = np.append(Lambdas, (2/3)*kk/(cc**5))
-                gravMass = np.append(gravMass, m)
-            except RuntimeError:
-                break
-        Lambdas = np.array(Lambdas)
-        gravMass = np.array(gravMass)
-        s = interp1d(gravMass, Lambdas)
-        
-        return([s, gravMass, max_mass,max(m_min,min_mass)])
-
-    def computeEvidenceRatio(self, EoS1, EoS2, gridN=1000, save=None, 
-                             trials=0, verbose=False):
+    def compute_eos_evidence_ratio(
+            self,
+            EoS1: str,
+            EoS2: str,
+            N_grid: int = 1000,
+            save_file: str | None = None, 
+            N_trials: int = 0,
+            verbose: bool = False
+        ):
         '''
         This method computes the ratio of evidences for two
         tabulated EoS. It first checks if a file exists with
@@ -606,350 +223,347 @@ np.log(self.data['q'])/self.var_logq,self.data['lambda2']/self.var_Lambda2)).T
         EoS2    :: The name of the second tabulated equation of
                    state or the name of the file from which the
                    EoS data is to be read.
-        gridN   :: Number of grid points over which the
+        N_grid   :: Number of grid points over which the
                    line-integral is computed. (Default = 1000)
-        trials  :: Number of trials for estimating the
+        N_trials  :: Number of trials for estimating the
                    uncertainty in the Bayes-factor.
         '''
 
         # generate interpolators for both EOS
-        min_mass1,min_mass2 = 0.,0.
+        min_mass1, min_mass2 = 0., 0.
 
         if type(EoS2) == list:
-            [s2, _,
-             max_mass_eos2,min_mass2] = self.getEoSInterp_parametrized(EoS2, N=1000)
+            [s2, _, max_mass_eos2, min_mass2] = get_eos_interpolant_from_parameters(EoS2, N=1000)
 
         elif os.path.exists(EoS2):
-            if verbose:
-                print('Trying m-R-k file to compute EoS interpolant')
+            if verbose: print('Trying m-R-k file to compute EoS interpolant')
             try:
-                [s2, _, _,
-                 max_mass_eos2] = self.getEoSInterpFromMRFile(EoS2)
+                [s2, _, _, max_mass_eos2] = get_eos_interpolant_from_mass_radius_file(EoS2)
             except ValueError:
-                if verbose:
-                    print('Trying m-λ file to compute EoS interpolant')
-                [s2, _, _,
-                 max_mass_eos2] = self.getEoSInterpFromMLambdaFile(EoS2)
+                if verbose: print('Trying m-λ file to compute EoS interpolant')
+                [s2, _, _, max_mass_eos2] = get_eos_interpolant_from_mass_tidal_file(EoS2)
         else:
-            [s2, _, _,
-             max_mass_eos2] = self.getEoSInterp(eosname=EoS2,
-                                                m_min=self.minMass)
+            [s2, _, _, max_mass_eos2] = get_eos_interpolant(EoS=EoS2, m_min=self.min_mass, N_points=100)
 
-        try: assert self.isBBH == False
-        except AssertionError:
-            self.isBBH = False
+        # Check the return values from get_eos_interpolant(), which may return [nan, nan, nan, nan] if the
+        # system is a BBH.
+        if [s2, max_mass_eos2] == [np.nan, np.nan]:
             print("The system being studied is a binary black hole system.")
-            if trials == 0:
+            if N_trials == 0:
                 return np.nan
             else:
-                return [np.nan, np.repeat(np.nan,trials)]
+                return [np.nan, np.repeat(np.nan, N_trials)]
 
-        if type(EoS1) == list:
-            [s1, _,
-             max_mass_eos1,min_mass1] = self.getEoSInterp_parametrized(EoS1, N=1000)
+        if type(EoS1) is list:
+            [s1, _, max_mass_eos1,min_mass1] = get_eos_interpolant_from_parameters(EoS1, N=1000)
 
         elif os.path.exists(EoS1):
             if verbose:
                 print('Trying m-R-k file to compute EoS interpolant')
             try:
-                [s1, _, _,
-                 max_mass_eos1] = self.getEoSInterpFromMRFile(EoS1)
+                [s1, _, _, max_mass_eos1] = get_eos_interpolant_from_mass_radius_file(EoS1)
             except ValueError:
                 if verbose:
                     print('Trying m-λ file to compute EoS interpolant')
-                [s1, _, _,
-                 max_mass_eos1] = self.getEoSInterpFromMLambdaFile(EoS1)
+                [s1, _, _, max_mass_eos1] = get_eos_interpolant_from_mass_tidal_file(EoS1)
         else:
-            [s1, _, _,
-             max_mass_eos1] = self.getEoSInterp(eosname=EoS1,
-                                                m_min=self.minMass)
+            [s1, _, _, max_mass_eos1] = get_eos_interpolant(EoS1, m_min=self.min_mass)
 
-        if self.isBBH == True:
-            self.isBBH = False
-            if trials == 0:
-                return 0
+        # Check the return values from get_eos_interpolant(), which may return [nan, nan, nan, nan] if the
+        # system is a BBH.
+        if [s1, max_mass_eos1] == [np.nan, np.nan]:
+            print("The system being studied is a binary black hole system.")
+            if N_trials == 0:
+                return np.nan
             else:
-                return [0, np.repeat(0,trials)]
+                return [np.nan, np.repeat(np.nan, N_trials)]
 
         # compute support
-        [lambdat_eos1,
-         q_eos1, support2D1] = integrator(self.q_min, self.q_max, self.mc_mean,
-                                          s1, max_mass_eos1, self.kde,
-                                          gridN=gridN,
-                                          var_LambdaT=self.var_LambdaT,
-                                          var_q=self.var_q,
-                                          minMass=max(self.minMass,min_mass1),
-                                          kdedim=self.kdedim,
-                                          var_Lambda1=self.var_Lambda1,
-                                          var_Lambda2=self.var_Lambda2,var_logq = self.var_logq,logq=self.logq)
+        [_, _, support_1] = self.integrate_posterior_for_eos_support(
+            s1, 
+            max_mass_eos1,
+            N_grid=N_grid,
+            min_mass=max(self.min_mass, min_mass1),
+        )
 
-        [lambdat_eos2,
-         q_eos2, support2D2] = integrator(self.q_min, self.q_max, self.mc_mean,
-                                          s2, max_mass_eos2, self.kde,
-                                          gridN=gridN,
-                                          var_LambdaT=self.var_LambdaT,
-                                          var_q=self.var_q,
-                                          minMass=max(self.minMass,min_mass2),
-                                          kdedim=self.kdedim,
-                                          var_Lambda1=self.var_Lambda1,
-                                          var_Lambda2=self.var_Lambda2,var_logq = self.var_logq,logq=self.logq)
+        [_, _, support_2] = self.integrate_posterior_for_eos_support(
+            s2, 
+            max_mass_eos2,
+            N_grid=N_grid,
+            min_mass=max(self.min_mass, min_mass2),
+        )
 
-        # iterate to determine uncertainty via re-drawing from
-        # smoothed distribution
-        # NOTE: this is known to introduce a bias into the mean
-        # and variance estimate!
+        # Iterate to determine uncertainty via re-drawing from
+        # smoothed distribution:
+        # NOTE: This is known to introduce a bias into the mean
+        # and variance estimate.
+        if N_trials == 0:
+            return (support_1 / support_2)
 
-        if trials == 0:
-            return (support2D1/support2D2)
+        ray.init(logging_level=1) if verbose else ray.init(logging_level=40)
 
+        N_cores = multiprocessing.cpu_count()
         if verbose:
-            ray.init(logging_level=1)
-        else:
-            ray.init(logging_level=40)
-        cores = multiprocessing.cpu_count()
-        if verbose:
-            print("Total number of cores in this machine: {}".format(cores))
+            print("Total number of cores in this machine: {}".format(N_cores))
 
         # Splitting (nearly) equally the # of trials over the # of workers
-        if trials < cores:
-            workers = trials
+        if N_trials < N_cores:
+            workers = N_trials
             trials_per_worker = np.ones(workers, dtype=int)
         else:
-            workers = cores
-            split = np.array_split(np.arange(trials), workers)
-            trials_per_worker = []
-            for ii in range(cores):
-                trials_per_worker.append(len(split[ii]))
+            workers = N_cores
+            split = np.array_split(np.arange(N_trials), workers)
+            trials_per_worker = [len(split[i]) for i in range(N_cores)]
 
         futures = []
-        for ii, this_trials, in zip(range(workers), trials_per_worker):
-            future_dict = {"margPostData": self.margPostData, "kde": self.kde,
-                           "yhigh": self.yhigh, "bw": self.bw, "q_min": self.q_min,
-                           "q_max": self.q_max, "mc_mean": self.mc_mean, "s1": s1,
-                           "s2": s2, "max_mass_eos1": max_mass_eos1,
-                           "max_mass_eos2": max_mass_eos2, "gridN": gridN,
-                           "var_LambdaT": self.var_LambdaT, "var_q": self.var_q, "var_logq": self.var_logq,
-                           "minMass": self.minMass, 'trials': this_trials,
-                           "kdedim":self.kdedim, "var_Lambda1": self.var_Lambda1,
-                           "var_Lambda2": self.var_Lambda2, "logq": self.logq, "logyhigh": self.logyhigh}
+        for i, worker_trials, in enumerate(trials_per_worker):
+            future_dict = {
+                "marginal_posterior": self.marginal_posterior,
+                "s1": s1,
+                "s2": s2,
+                "max_mass_eos1": max_mass_eos1,
+                "max_mass_eos2": max_mass_eos2, 
+                "N_grid": N_grid,
+                "min_mass": self.min_mass, 
+                'N_trials': worker_trials,
+            }
 
-            futures.append(get_trials.remote(future_dict))
+            futures.append(self._compute_eos_evidence_ratios_over_trials.remote(self, future_dict))
             if verbose:
-                print("Submitted task in core: {}".format(ii+1))
+                print("Submitted task in core: {}".format(i+1))
+        
         ray.get(futures)
-        sup_array = np.array([])
-        for future in futures:
-            sup_array = np.append(sup_array, ray.get(future))
+        supports = np.array([ray.get(future) for future in futures])
+        ray.shutdown()
 
-        if save:
+        if save_file is not None:
             bf_dict = {}
             bf_dict['ref_eos'] = EoS2
             bf_dict['target_eos'] = EoS1
-            bf_dict['bf'] = support2D1/support2D2
-            bf_dict['bf_array'] = sup_array.tolist()
-            # Making sure that the file extension is json
-            if (save.split('.')[-1] != 'json') and (save.split('.')[-1] != 'JSON'):
-                save += '.json'
-            with open(save, 'w') as f:
+            bf_dict['bf'] = support_1 / support_2
+            bf_dict['bf_array'] = supports.tolist()
+            
+            with open(save_file, 'w') as f:
                 json.dump(bf_dict, f, indent=2, sort_keys=True)
             if verbose:
-                print("Result saved in: {}".format(save))
+                print(f"Result saved in: {save_file}")
+        
+        return [support_1 / support_2, supports]
 
-        ray.shutdown()
-        return [support2D1/support2D2, sup_array]
-
-    def eos_evidence(self, params, gridN=1000):
+    def compute_parameterized_eos_evidence(self, params, N_grid=1000):
         '''
         This method computes the evidence for a parametrized EoS.
 
         params      :: Four parameter list.
-        gridN       :: Number of grid points over which the
+        N_grid       :: Number of grid points over which the
                        line-integral is computed. (Default = 100)
         '''
 
         # generate interpolator for eos
-        [s, _,
-         max_mass_eos,min_mass] = self.getEoSInterp_parametrized(params, N=100, m_min=self.m_min)
+        [s, _, max_mass_eos, min_mass] = get_eos_interpolant_from_parameters(
+            params,
+            parameterization=self.parameterization, #type: ignore
+            N_points=100,
+            m_min=self.m_min
+        )
 
         # compute support
-        [lambdat_eos,
-         q_eos, support2D] = integrator(self.q_min, self.q_max, self.mc_mean,
-                                        s, max_mass_eos, self.kde,
-                                        gridN=gridN,
-                                        var_LambdaT=self.var_LambdaT,
-                                        var_q=self.var_q,
-                                        minMass=min_mass,
-                                        kdedim=self.kdedim,
-                                        var_Lambda1=self.var_Lambda1,
-                                        var_Lambda2=self.var_Lambda2,var_logq = self.var_logq,logq=self.logq)
+        [_, _, support] = self.integrate_posterior_for_eos_support(
+            s, 
+            max_mass_eos,
+            N_grid=N_grid,
+            min_mass=min_mass
+        )
 
-        return(support2D)
+        return support
 
-    def plot_func(self, eos_list, gridN=1000, filename='posterior_support.pdf',
-                  full_mc_dist=False, usetitle=False):
-        '''
-        This method takes as input a list of equation of state models
-        and creates a plot where these equation of state models are
-        overlayed on the 2D posterior samples and their corresponding
-        KDE.
+    @ray.remote
+    def _compute_eos_evidence_ratios_over_trials(self, fd):
+        supports_1 = []
+        supports_2 = []
 
-        eos_list :: A list of equation state models. The members of
-                    list could be either one of the named equation of
-                    state in LALSimulation, or text files with columns
-                    giving the mass and tidal deformability information,
-                    or text files with columns giving mass, radius and
-                    tidal Love number. The method also accepts a string
-                    if the user wishes to plot a single equation of state.
+        for _ in range(fd['trials']):
+            # generate new (synthetic) data
+            new_marginal_posterior = np.array([])
+            counter = 0
+            while len(new_marginal_posterior) < len(fd['marginal_posterior']):
+                prune_adjust_factor = 1.1 + counter / 10.
+                N_resample = int(len(fd['marginal_posterior']) * prune_adjust_factor)
+                
+                new_marginal_posterior = fd['kde'].resample(size=N_resample).T
+                
+                unphysical = [new_marginal_posterior[:, 0] < 0.0] + \
+                            [new_marginal_posterior[:, 1] > 1.0] + \
+                            [new_marginal_posterior[:, 1] < 0.0]
+                
+                new_marginal_posterior = new_marginal_posterior[~unphysical]
+                
+                print("Count: {}".format(counter))
+                counter += 1
+            
+            indices = np.arange(len(new_marginal_posterior))
+            chosen = np.random.choice(indices, len(fd['marginal_posterior']))
+            new_marginal_posterior = new_marginal_posterior[chosen]
 
-        gridN :: # of grid pts used for plotting EOS curves. (Default: 1000)
-        filename :: Name of the output file in the which the plot will be
-                    saved. (Default: posterior_support.png)
-        full_mc_dist :: The EOS curves in the eos_list will be plotted with
-                        as a band bounded by the smallest and the largest
-                        values of the chirp mass.
-        usetitle :: List of EoS on the title of the plot (Default: False)
-        '''
-
-        import pylab as pl
-
-        pl.clf()
-        pl.rcParams.update({'font.size': 18})
-        pl.figure(figsize=(15, 10))
-
-        lambdat_grid = np.linspace(0, np.max(self.data['lambdat']), 100)
-        q_grid = np.linspace(np.min(self.data['q']), 1.0, 100)
-        L_GRID, Q_GRID = np.meshgrid(lambdat_grid, q_grid)
-        grid2D = np.array([L_GRID, Q_GRID]).T
-        a, b, c = np.shape(grid2D)
-        grid2D_reshaped = grid2D.reshape(a*b, c)
-        sample_data = np.vstack((self.data['lambdat'], self.data['q'])).T
-        kde = Bounded_2d_kde(sample_data, xlow=0.0, xhigh=None, ylow=0.0,
-                             yhigh=1.0, bw=self.bw)
-
-        support2Dgrid = kde.evaluate(grid2D_reshaped)
-
-        support2D_matrix = support2Dgrid.reshape(len(lambdat_grid),
-                                                 len(q_grid))
-        pl.pcolormesh(L_GRID, Q_GRID, support2D_matrix.T, shading='auto')
-        pl.colorbar()
-        pl.scatter(self.data['lambdat'], self.data['q'], marker='.', c='k',
-                   s=1, alpha=0.1)
-
-        q_min = self.q_min*self.var_q
-        q_max = self.q_max*self.var_q
-        mc = np.mean(self.data['mc_source'])
-        if full_mc_dist:
-            mc_low = np.min(self.data['mc_source'])
-            mc_hi = np.max(self.data['mc_source'])
-
-        q = np.linspace(q_min, q_max, gridN)
-        m1, m2 = getMasses(q, mc)
-        if full_mc_dist:
-            m1_low, m2_low = getMasses(q, mc_low)
-            m1_low, m2_low, q_low = apply_mass_constraint(m1_low, m2_low,
-                                                          q, self.minMass)
-            m1_hi, m2_hi = getMasses(q, mc_hi)
-            m1_hi, m2_hi, q_hi = apply_mass_constraint(m1_hi, m2_hi,
-                                                            q, self.minMass)
-            q_fill = np.intersect1d(q_low, q_hi)
-            m1_hi = m1_hi[np.in1d(q_hi, q_fill)]
-            m2_hi = m2_hi[np.in1d(q_hi, q_fill)]
-            m1_low = m1_low[np.in1d(q_low, q_fill)]
-            m2_low = m2_low[np.in1d(q_low, q_fill)]
-        m1, m2, q = apply_mass_constraint(m1, m2, q, self.minMass)
-
-        assert (type(eos_list) == str or type(eos_list) == list)
-        if type(eos_list) == str:
-            eos_list = [eos_list]
-        for eos in eos_list:
-            if type(eos) == list:
-                [s, _,
-                 max_mass_eos,min_mass] = self.getEoSInterp_parametrized(eos, N=1000)
-
-                # Reducing the text in the figure legend
-                eos = [np.round(eos[0], 4), np.round(eos[1], 4), np.round(eos[2], 4),np.round(eos[3], 4)]
-
-            elif os.path.exists(eos):
-                print('Trying m-R-k file to compute EoS interpolant')
-                try:
-                    [s, _, _,
-                     max_mass_eos] = self.getEoSInterpFromMRFile(eos)
-                except ValueError:
-                    print('Trying m-λ file to compute EoS interpolant')
-                    [s, _, _,
-                     max_mass_eos] = self.getEoSInterpFromMLambdaFile(eos)
+            # generate a new kde
+            if self.method == '2D':
+                new_kde = BoundedKDE(
+                    new_marginal_posterior,
+                    low= [0.0,  0.0],
+                    high=[None, 1.0]
+                )
+            elif self.method == '3D':
+                new_kde = BoundedKDE(
+                    new_marginal_posterior,
+                    low= [0.0,    0.0, 0.0   ],
+                    high=[np.inf, 1.0, np.inf]
+                )
             else:
-                [s, _, _,
-                 max_mass_eos] = self.getEoSInterp(eosname=eos,
-                                                   m_min=self.minMass)
+                raise ValueError(f'Invalid: self.method = {self.method} is not in ["2D", "3D"]')
 
-            LambdaT = get_LambdaT_for_eos(m1, m2, max_mass_eos, s)
-            if full_mc_dist:
-                LambdaT_low = get_LambdaT_for_eos(m1_low, m2_low,
-                                                  max_mass_eos, s)
-                LambdaT_hi = get_LambdaT_for_eos(m1_hi, m2_hi, max_mass_eos, s)
+            # integrate to get support
+            [_, _, support_1] = self.integrate_posterior_for_eos_support(
+                fd['s1'],
+                fd['max_mass_eos1'],
+                N_grid=fd['N_grid'],                
+                min_mass=fd['min_mass'],
+                density_estimator=new_kde
+            )
+            [_, _, support_2] = self.integrate_posterior_for_eos_support(
+                fd['s2'],
+                fd['max_mass_eos2'],
+                N_grid=fd['N_grid'],                
+                min_mass=fd['min_mass'],
+                density_estimator=new_kde
+            )
 
-            if full_mc_dist:
-                p = pl.plot(LambdaT, q, linewidth=1, label=eos)
-            else:
-                p = pl.plot(LambdaT, q, linewidth=3, label=eos)
-            color = p[0].get_color()
-            if full_mc_dist:
-                pl.fill_betweenx(q_fill, LambdaT_low, LambdaT_hi,
-                                 facecolor=color, alpha=0.5)
-            pl.xlabel('$\\tilde{\\Lambda}$')
-            pl.ylabel('$q$')
-            pl.xlim([np.min(self.data['lambdat']),
-                     np.max(self.data['lambdat'])])
-            pl.ylim([np.min(self.data['q']),
-                     np.max(self.data['q'])])
-            pl.legend()
+            # store the result
+            supports_1.append(support_1)
+            supports_2.append(support_2)
 
-        if usetitle:
-            text = ', '.join('{0}'.format(eos) for eos in eos_list)
-            pl.title('EoS = {}'.format(text))
-        pl.savefig(filename, bbox_inches='tight')
+        return np.array(supports_1) / np.array(supports_2)
+
+    def _read_posterior_file(self, posterior_file: str):
+        posterior_file_ = pathlib.Path(posterior_file)
+        ext = posterior_file_.suffix
+
+        m1, m2, q, mc, lambda1, lambda2, lambdat = None, None, None, None, None, None, None
+
+        if ext == '.h5':
+            with h5py.File(posterior_file_) as f:
+                data = np.array(f['posterior_samples'])
+            
+            if self.method == '2D':
+                m1 = np.array(data['m1_source'])
+                m2 = np.array(data['m2_source'])
+                q = np.array(data['q'])
+                mc = np.array(data['mc_source'])
+                lambdat = np.array(data['lambdat'])
+            
+            elif self.method == '3D':
+                m1 = np.array(data['m1_source'])
+                m2 = np.array(data['m2_source'])
+                q = np.array(data['q'])
+                mc = np.array(data['mc_source'])
+                lambda1 = np.array(data['lambda_1'])
+                lambda2 = np.array(data['lambda_2'])
+
+        elif ext == '.txt':
+            data = np.loadtxt(posterior_file)
+            if self.method == '2D':
+                m1 = np.array(data[0])
+                m2 = np.array(data[1])
+                q = np.array(data[2])
+                mc = np.array(data[3])
+                lambdat = np.array(data[4])
+
+            elif self.method == '3D':
+                m1 = np.array(data[0])
+                m2 = np.array(data[1])
+                q = np.array(data[2])
+                mc = np.array(data[3])
+                lambda1 = np.array(data[4])
+                lambda2 = np.array(data[5])
+
+        elif ext == '.json':
+            with open(posterior_file) as f:
+                data = json.load(f)['posterior']['content']
+            
+            if self.method == '2D':
+                m1 = np.array(data['m1_source'])
+                m2 = np.array(data['m2_source'])
+                q = np.array(data['q'])
+                mc = np.array(data['mc_source'])
+                lambdat = np.array(data['lambdat'])
+            
+            elif self.method == '3D':
+                m1 = np.array(data['m1_source'])
+                m2 = np.array(data['m2_source'])
+                q = np.array(data['q'])
+                mc = np.array(data['mc_source'])
+                lambda1 = np.array(data['lambda_1'])
+                lambda2 = np.array(data['lambda_2'])
+
+        else:
+            data = np.genfromtxt(posterior_file, names=True)
+            
+            if self.method == '2D':
+                m1 = np.array(data['m1_source'])
+                m2 = np.array(data['m2_source'])
+                q = np.array(data['q'])
+                mc = np.array(data['mc_source'])
+                lambdat = np.array(data['lambdat'])
+            
+            elif self.method == '3D':
+                m1 = np.array(data['m1_source'])
+                m2 = np.array(data['m2_source'])
+                q = np.array(data['q'])
+                mc = np.array(data['mc_source'])
+                lambda1 = np.array(data['lambda_1'])
+                lambda2 = np.array(data['lambda_2'])
+        
+        return m1, m2, q, mc, lambda1, lambda2, lambdat
 
 
-class Stacking():
-    def __init__(self, event_list, event_priors=None, labels=None,spectral=False,Ns=None,kdedim=2,logq=False):
+class JointModelSelector():
+    def __init__(
+            self,
+            posterior_files: Sequence[str],
+            methods: Sequence[Literal['2D', '3D']],
+            prior_files: Sequence[str] | None = None,
+            event_labels: Sequence[str | None] | None = None,
+            density_est_method: Literal['kde', 'flow'] = 'kde',
+            N_samples: int | None = None,
+            parameterization: Literal['spectral', 'polytrope'] = 'spectral'
+        ):
         '''
         This class takes as input a list of posterior-samples files for
         various events. Optionally, prior samples files can also be
         supplied and allows us to compute the various quantities related
-        to each of the posterior samples. Ns is the Number of samples to which the single event q and 
+        to each of the posterior samples. N_samples is the Number of samples to which the single event q and 
         lambda_tilde posteriors are downsampled and is only required for speeding up the parametric eos
         analysis
         '''
-        if type(event_list) != list:  # event_list must be a list
-            print('All arguments for Stacking must be a list of file-names')
-            sys.exit(0)
-
-        if event_priors:
-            if type(event_priors) != list:
-                print('All arguments for Stacking must be lists of file-names')
-                sys.exit(0)
-
-        if labels is None:
-            labels = [None]*len(event_list)
+        if event_labels is None:
+            event_labels = [None] * len(posterior_files)
 
         # Loop over the list and make sure all the paths exists.
         # Keep only those events whose file exits.
 
         sanitized_event_list = []
-        self.labels = []
-        for event, label in zip(event_list, labels):
+        self.event_labels = []
+        for event, label in zip(posterior_files, event_labels):
             if os.path.exists(event):
                 sanitized_event_list.append(event)
-                self.labels.append(label)
+                self.event_labels.append(label)
             else:
                 print('Could not file {}. Skipping event'.format(event))
 
         self.event_list = sanitized_event_list
 
-        if event_priors:
+        if prior_files:
             sanitized_event_priors = []
-            for event_prior in event_priors:
+            for event_prior in prior_files:
                 if os.path.exists(event_prior):
                     sanitized_event_priors.append(event_prior)
                 else:
@@ -958,28 +572,43 @@ class Stacking():
             self.event_priors = sanitized_event_priors
 
         else:
-            self.event_priors = [None]*len(self.event_list)
+            self.event_priors = [None] * len(self.event_list)
 
         # Right now the method demands a unique prior file for each event
         # This may be changed later.
-        if len(self.event_priors) != len(self.event_list):
-            print('Number of prior and posterior files should be same')
-            sys.exit(0)
-        self.spectral=spectral
-        self.kdedim = kdedim*np.ones(len(event_list)) if type(kdedim)!=list else kdedim
-        modsel=[]
-        for prior_file, event_file, this_kdedim in zip(self.event_priors, self.event_list,self.kdedim):
-            modsel.append(Model_selection(posteriorFile=event_file,
-                                     priorFile=prior_file,spectral=self.spectral,Ns=Ns,kdedim=this_kdedim,logq=logq))
-        self.modsel=modsel
-        self.Nevents=len(modsel)
-    def stack_events(self, EoS1, EoS2, trials=0, gridN=1000, save=None, 
-                     verbose=False):
+        assert len(self.event_priors) == len(self.event_list), 'Number of prior and posterior files should be same'
+        
+        self.methods = methods
+        self.parameterization = parameterization
+        
+        self.model_selectors = []
+        for prior_file, event_file, method in zip(self.event_priors, self.event_list, self.methods):
+            self.model_selectors.append(
+                ModelSelector(
+                    posterior_file=event_file,
+                    prior_file=prior_file,
+                    method=method,
+                    density_est_method=density_est_method,
+                    parameterization=self.parameterization,
+                    N_samples=N_samples,
+                )
+            )
+        self.N_events = len(self.model_selectors)
+    
+    def compute_joint_eos_evidence_ratio(
+            self,
+            EoS1,
+            EoS2,
+            N_trials: int = 0,
+            N_grid: int = 1000,
+            verbose: bool = False,
+            save_file=None
+        ):
         '''
         Loop through each event and compute the joint Bayes-factor.
-        Each individual event's Bayes-factor can be accessed from the Stacking
-        object, using Stacking.all_bayes_factors. Uncertainty for each case can
-        be accessed by using Stacking.all_bayes_factors_errors.
+        Each individual event's Bayes-factor can be accessed from the JointModelSelector
+        object, using JointModelSelector.all_bayes_factors. Uncertainty for each case can
+        be accessed by using JointModelSelector.all_bayes_factors_errors.
 
         EoS1 :: The name of the first equation of state model. This can be
                 either one of the named equation of state models from LALSuite,
@@ -991,23 +620,25 @@ class Stacking():
                 or a file containing the information of the equation of state,
                 (m, λ) or (m, r, κ).
 
-        trials :: Number of trials to be used to computed the uncertainty in
+        N_trials :: Number of trials to be used to computed the uncertainty in
                   the Bayes-factor.
 
-        gridN :: Number of grid points over which the line-integral is
+        N_grid :: Number of grid points over which the line-integral is
                  computed (Default = 1000).
 
-        save :: Use this option to save the results into json files. If nothing
+        save_file :: Use this option to save the results into json files. If nothing
                 is provided, then output will not be saved. If a name is
                 provided then the output will be saved to a file with that
                 name.
         '''
         joint_bf = 1.0
         self.all_bayes_factors = []  # To be populated by B.Fs from all events
-        if trials > 0:
-            joint_bf_array = np.ones(trials)
+        
+        if N_trials > 0:
+            joint_bf_array = np.ones(N_trials)
             self.all_bayes_factors_errors = []
-        for modsel in self.modsel:
+        
+        for model_selector in self.model_selectors:
             '''NOTE:
             It seems to be the logical thing to parallelize the run of the
             individual events on different CPUs using ray. However, it does not
@@ -1039,165 +670,68 @@ class Stacking():
             completion will move on to the next event. 
             '''
             
-            bayes_factor = modsel.computeEvidenceRatio(EoS1, EoS2,
-                                                       gridN=gridN,
-                                                       trials=trials,
-                                                       verbose=verbose)
+            bayes_factor = model_selector.compute_eos_evidence_ratio(
+                EoS1,
+                EoS2,
+                N_grid=N_grid,
+                N_trials=N_trials,
+                verbose=verbose
+            )
 
-            if type(bayes_factor) == np.float64:
-                joint_bf *= bayes_factor
-                self.all_bayes_factors.append(bayes_factor)
-            elif type(bayes_factor) == list:
+            if N_trials > 0:
                 if type(bayes_factor[0]) == np.float64:
                     joint_bf *= bayes_factor[0]
                     self.all_bayes_factors.append(bayes_factor[0])
+                    
                     this_event_trials = bayes_factor[-1]
                     this_event_error = 2*np.std(this_event_trials)
                     self.all_bayes_factors_errors.append(this_event_error)
+                    
                     joint_bf_array *= bayes_factor[-1]
+            
+            else:
+                joint_bf *= bayes_factor
+                self.all_bayes_factors.append(bayes_factor)
+                           
 
-        if save is None:
-            if trials > 0:
-                joint_bf = [joint_bf, joint_bf_array]
-            return joint_bf
+        if save_file is not None:
+            stack_dict = {}
+            stack_dict['ref_eos'] = EoS2
+            stack_dict['target_eos'] = EoS1
 
-        stack_dict = {}
-        stack_dict['ref_eos'] = EoS2
-        stack_dict['target_eos'] = EoS1
+            stack_dict['joint_bf'] = joint_bf
+            if N_trials > 0:
+                stack_dict['joint_bf_array'] = joint_bf_array.tolist()
+            else:
+                stack_dict['joint_bf_array'] = None
 
-        stack_dict['joint_bf'] = joint_bf
-        if trials > 0:
-            stack_dict['joint_bf_array'] = joint_bf_array.tolist()
-        else:
-            stack_dict['joint_bf_array'] = None
+            stack_dict['all_bf'] = self.all_bayes_factors
+            if N_trials > 0:
+                stack_dict['all_bf_err'] = self.all_bayes_factors_errors
+            else:
+                stack_dict['all_bf_err'] = None
 
-        stack_dict['all_bf'] = self.all_bayes_factors
-        if trials > 0:
-            stack_dict['all_bf_err'] = self.all_bayes_factors_errors
-        else:
-            stack_dict['all_bf_err'] = None
+            with open(save_file, 'w+') as f:
+                json.dump(stack_dict, f, indent=4, sort_keys=True)
 
-        # Making sure that the file extension is json
-        if (save.split('.')[-1] != 'json') and (save.split('.')[-1] != 'JSON'):
-            save += '.json'
+        return [joint_bf, joint_bf_array] if N_trials > 0 else joint_bf
 
-        with open(save, 'w') as f:
-            json.dump(stack_dict, f, indent=2, sort_keys=True)
-
-        if trials > 0:
-            joint_bf = [joint_bf, joint_bf_array]
-
-        return joint_bf
-
-    def joint_evidence(self, EoS, gridN=1000):
+    def compute_parameterized_eos_joint_evidence(self, EoS, N_grid: int = 1000):
         '''
-        Loop through each event and compute the joint evidence. Each individual 
-        event's evidence can be accessed from the Stacking object, using 
-        Stacking.all_evidences.
+        Loop through each event and compute the joint evidence.
 
         EoS :: The list of parameters that characterise the equation of state. 
                This can be in the form of either one of the two supported 
                parametrized equations of state: Spectral Decomposition and 
                Piecewise Polytrope.
 
-        gridN :: Number of grid points over which the line-integral is
+        N_grid :: Number of grid points over which the line-integral is
                  computed (Default = 1000).
         '''
-        joint_evidence = 1.0
-        self.all_evidences = []  # To be populated by B.Fs from all events
+        all_evidences = []  # To be populated by B.Fs from all events
 
-        for modsel in self.modsel:
+        for model_selector in self.model_selectors:
+            all_evidences.append(model_selector.compute_parameterized_eos_evidence(EoS, N_grid=N_grid))
 
-            joint_evidence *= modsel.eos_evidence(EoS, gridN=gridN)
-
-        return joint_evidence
-
-    def plot_stacked_bf(self, eos_list=None, ref_eos='SLY', trials=0,
-                        gridN=1000, filename='stacked_bf.pdf'):
-        '''
-        This method makes bar plots for bayes-factor between various EoS
-        and a reference EoS. It does this for multiple events. The bar plots
-        are generated for each event. The results are stacked and the then
-        a combined bayes-factor bar-plot is generated. Alternatively, this
-        method can also be used to make plots directly from data files.
-
-        eos_list :: List of strings, either named equation of state models from
-                   LALSuite, or names of files contining the equation of state
-                   information, (m, λ) or (m, r, κ). If no list is provided, a
-                   default list will be used.
-
-        ref_eos :: Reference equation of state The equation of state against
-                   which the Bayes-factor is to be computed. If no reference
-                   model is used, the SLY model from LALSuite will be used.
-
-        trials :: Number of trials to be used to computed the uncertainty in
-                  the Bayes-factor.
-
-        gridN :: Number of grid points over which the line-integral
-                 computed (Default = 1000).
-
-        filename :: Name of the file where the plot will be saved.
-        '''
-
-        import pylab as pl
-        pl.clf()
-
-        if eos_list is None:
-            eos_list = ['APR4_EPP', 'BHF_BBB2', 'H4', 'HQC18',
-                        'KDE0V', 'KDE0V1', 'MPA1', 'MS1B_PP',
-                        'MS1_PP', 'RS', 'SK255', 'SK272',
-                        'SKI2', 'SKI3', 'SKI4', 'SKI5', 'SKI6',
-                        'SKMP', 'SKOP', 'SLY9', 'WFF1']
-
-        N = len(eos_list)
-        ind = np.arange(N)
-        width = 0.10
-
-        bf_combined = []
-        d_bf_combined = []
-        bf_all_events = []
-        d_bf_all_events = []
-        for eos in eos_list:
-            print('Stacking events for model: {}'.format(eos))
-            this_eos_bf = self.stack_events(eos, ref_eos, trials=trials)
-
-            if trials > 0:
-                bf_combined.append(this_eos_bf[0])
-                d_bf_combined.append(2*np.std(this_eos_bf[-1]))
-            else:
-                bf_combined.append(this_eos_bf)
-
-            bf_all_events.append(self.all_bayes_factors)
-            if trials > 0:
-                d_bf_all_events.append(self.all_bayes_factors_errors)
-
-        bf_all_events = np.array(bf_all_events).T
-        d_bf_all_events = np.array(d_bf_all_events).T
-
-        if trials > 0:
-            pl.bar(ind, bf_combined, width, yerr=d_bf_combined,
-                   error_kw=dict(lw=3, capsize=6, capthick=2),
-                   label="Joint Bayes' factor")
-        else:
-            pl.bar(ind, bf_combined, width, yerr=None,
-                   label="Joint Bayes' factor")
-
-        shift = 1
-        if trials > 0:
-            for bf, dbf, ll in zip(bf_all_events, d_bf_all_events, self.labels):  # noqa E501
-                pl.bar(ind + shift*width, bf, width, yerr=dbf, capsize=6,
-                       label=ll, alpha=0.4)
-                pl.xticks(ind + 2.5*width, eos_list, rotation=50)
-                shift += 1
-
-        else:
-            for bf, ll in zip(bf_all_events, self.labels):
-                pl.bar(ind + shift*width, bf, width, label=ll, alpha=0.4)
-                pl.xticks(ind + 2.5*width, eos_list, rotation=50)
-                shift += 1
-
-        pl.legend(loc='best')
-        ax = pl.gca()
-        pl.ylim([0, 1.9])
-        pl.ylabel('Bayes-Factor w.r.t {}'.format(ref_eos))
-        pl.savefig(filename, bbox_inches='tight')
+        joint_evidence = np.prod(all_evidences)
+        return joint_evidence, all_evidences
