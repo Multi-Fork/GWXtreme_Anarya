@@ -30,8 +30,9 @@ class ParameterizedEoSSampler():
     def __init__(
             self, 
             posterior_files, 
-            prior_bounds, 
-            save_file, 
+            prior_bounds,
+            methods,
+            save_file,
             N_grid: int = 100, 
             N_walkers: int = 100,
 		    N_parameter_samples: int = 10000, 
@@ -90,7 +91,7 @@ class ParameterizedEoSSampler():
         
         self.joint_selector = JointModelSelector(
             posterior_files,
-            methods=['2D'] * len(posterior_files), #type: ignore
+            methods=methods,
             density_est_method=density_est_method,
             parameterization=parameterization,
             N_samples=N_posterior_samples,
