@@ -8,10 +8,9 @@ import h5py
 import lalsimulation as lalsim
 import lal
 
-from .eos_model_selection import ModelSelector
-from .parametrized_eos_sampler import ParameterizedEoSSampler
-from .eos_prior import compute_log_pressure_from_eos, create_spectral_eos
-
+from gwxtreme.GWXtreme.eos_inference import ModelSelector
+from parametrized_eos_sampler import ParameterizedEoSSampler
+from eos_prior import compute_log_pressure_from_eos, create_spectral_eos
 from shared_config import *
 
 ##### composed files #####
@@ -126,6 +125,7 @@ def combine_bayes_factors_files(
         json.dump(all_bfs, f, indent=4, sort_keys=False)
 
     return save_file
+
 
 def sample_spectral_EoS_parameters(
         event_label: str,

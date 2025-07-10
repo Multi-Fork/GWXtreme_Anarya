@@ -23,10 +23,6 @@ import lalsimulation
 import lal
 
 
-LARGEST_NS_MASS = 1.97
-_X_GRID = np.linspace(0., 12.3081, 500)
-
-
 def compute_log_pressure_from_eos(rho, eos):
     '''
     Calculates log10 pressure as a function of density rho
@@ -40,8 +36,8 @@ def compute_log_pressure_from_eos(rho, eos):
 
     # FAM = lalsimulation.CreateSimNeutronStarFamily(eos)
     p_max_i = min(6e35, lalsimulation.SimNeutronStarEOSMaxPressure(eos))
-    log10_p_grid = np.linspace(*np.log10([5e31, p_max_i]), 128)
-    p_grid = np.power(10.0, log10_p_grid)
+    log10_p = np.linspace(np.log10(5e31), np.log10(p_max_i), 128)
+    p_grid = np.power(10.0, log10_p)
     rho_grid = np.empty_like(p_grid)
     
     for j, p in np.ndenumerate(p_grid):
@@ -53,7 +49,7 @@ def compute_log_pressure_from_eos(rho, eos):
     log10_p_out = np.interp(
         np.log10(rho), 
         log10_rho_grid, 
-        log10_p_grid, 
+        log10_p, 
         left=-np.inf, 
         right=-np.inf,
     )
@@ -137,7 +133,8 @@ def is_valid_adiabatic_index(spectral_parameters: tuple):
                             parameters describing the eos.
     '''
     
-    adiabatic_index = spectral_eos_adiabatic_index(_X_GRID, spectral_parameters)
+    x_grid = np.linspace(0., 12.3081, 500)
+    adiabatic_index = spectral_eos_adiabatic_index(x_grid, spectral_parameters)
     return (adiabatic_index > 0.6).all() and (adiabatic_index < 4.5).all()
 
 
@@ -172,6 +169,7 @@ def has_enough_points(eos: typing.Any) -> bool:
         m_prev = m
 
     return True
+
 
 def eos_max_sound_speed(eos: typing.Any, eos_fam: typing.Any) -> float:
     '''
@@ -233,7 +231,7 @@ def is_valid_eos(
         parameters, 
         prior_settings,
         spectral=True, 
-        largest_ns_mass=LARGEST_NS_MASS,
+        largest_ns_mass=1.97,
         require_mass_ranges=None,
     ):
     
