@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from GWXtreme import eos_model_selection as ems
+from gwxtreme.GWXtreme import eos_inference as ems
 
 sample_filename = Path(__file__).parent / 'data/test_samples.dat'
 sample_filename = str(sample_filename.absolute())

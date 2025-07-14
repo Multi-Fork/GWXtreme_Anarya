@@ -8,67 +8,69 @@ import h5py
 import lalsimulation as lalsim
 import lal
 
-from gwxtreme.GWXtreme.eos_inference import ModelSelector
-from parametrized_eos_sampler import ParameterizedEoSSampler
-from eos_prior import compute_log_pressure_from_eos, create_spectral_eos
-from shared_config import *
-
-##### composed files #####
-# cornerPlots_EoScurves.py
-# eventBFs.py
-# eventConstraint.py
-# indivLambdaHist.py
-# indivSimulConstraint.py
-# lambdaHist.py
-# maxMassHist.py
-# nestSamp_BFs.py
-# simulBFs.py
+from ..GWXtreme.eos_inference import ModelSelector, ParameterizedEoSSampler
+from ..GWXtreme.eos_prior import compute_log_pressure_from_eos, create_spectral_eos
+from ..GWXtreme.config import EOS_LIST
 
 
 def compute_single_event_bayes_factors(
-        event_label: str,
-        method_label: str,
-        posterior_file: str,
+        event: str,
         method: Literal['2D', '3D'],
+        waveform: Literal['TaylorF2', 'IMRPhenomD_NRTidalv2'],
+        density_est_method: Literal['kde', 'flow'],
         EoS_names: list[str] = EOS_LIST,
         N_trials: int = 10_000,
-        save_dir: str = "data/BNS/BFs"
+        save_dir: str | None = None
 ):
     """
-    Compute Bayes Factors for each EoS in EoS_names from the event parameter posteriors in posterior_file, 
-    re-computing N_trials number of times to be used later for error estimation.
+    Compute Bayes Factors for each EoS in EoS_names for a given event.
     """
     model_selector = ModelSelector(
-        posterior_file,
+        event=event,
         method=method,
-        N_samples=4000, 
+        density_est_method=density_est_method
     )
-    BFs = []
-    trials = []
+    
+    BFs = {method: {waveform: {density_est_method: {}}}}
     for EoS in EoS_names:
+        result = model_selector.compute_eos_evidence_ratio(
+            EoS1=EoS,
+            EoS2="SLY",
+            N_grid=1000,
+            N_trials=N_trials
+        )
+
         if N_trials == 0:
-            bf = model_selector.compute_eos_evidence_ratio(EoS1=EoS, EoS2="SLY", N_trials=N_trials)
+            bf = result
             bf_trials = []
         else:
-            bf, bf_trials = model_selector.compute_eos_evidence_ratio(EoS1=EoS, EoS2="SLY", trials=N_trials) # type: ignore
+            bf, bf_trials = result
             bf_trials = bf_trials.tolist()
-        BFs.append(bf)
-        trials.append(bf_trials)
-
-    out = {method_label : {EoS_names[i] : [BFs[i], trials[i]] for i in range(len(EoS_names))}}
+        
+        if density_est_method == 'flow':
+            BFs[method][waveform][density_est_method][EoS] = {
+                "native": bf,
+                "ensemble": bf_trials
+            }
+        else:
+            BFs[method][waveform][density_est_method][EoS] = {
+                "native": bf,
+                "resamples": bf_trials
+            }
     
-    save_file = pathlib.Path(f"{save_dir}/{event_label}_{method_label.replace(" ", "-")}_bayes_factors.json")
-    save_file.touch(exist_ok=True)
+    if save_dir is not None:
+        save_file = f"{save_dir}/{event}_{method.replace(" ", "-")}_{density_est_method}_bayes_factors.json"
+        with open(save_file, "w") as f:
+            json.dump(BFs, f, indent=4, sort_keys=True)
     
-    with open(save_file, "w") as f:
-        json.dump(out, f, indent=4, sort_keys=True)
+    return BFs
 
 
 def compute_bayes_factors_from_nested_sampling_evidences(
-        event_label: str,
+        event: str,
         method_label: str,
         evidences_file: str, # .json
-        save_dir: str = "data/BNS/BFs",
+        save_dir: str | None = None,
 ):
     # Opens files that originate from a single file with GW170817's nested sampling
     # evidences for each EoS. We compute the BFs w.r.t. SLY and try out multiple 
@@ -105,12 +107,15 @@ def compute_bayes_factors_from_nested_sampling_evidences(
         
         bayes_factors[method_label][EoS] = [BF, [err1, err2, err3]]
 
-    with open(f"{save_dir}/{event_label}_{method_label.replace(" ", "-")}_bayes_factors.json", "w+") as f:
-        json.dump(bayes_factors, f, indent=4, sort_keys=True)
+    if save_dir is not None:
+        with open(f"{save_dir}/{event}_{method_label.replace(" ", "-")}_bayes_factors.json", "w+") as f:
+            json.dump(bayes_factors, f, indent=4, sort_keys=True)
+    
+    return bayes_factors
 
 
 def combine_bayes_factors_files(
-        event_label: str,
+        event: str,
         bayes_factors_files: list[str],
         save_dir: str
 ) -> str:
@@ -120,7 +125,7 @@ def combine_bayes_factors_files(
             bfs = json.load(f)
         all_bfs.update(bfs)
     
-    save_file = f"{save_dir}/{event_label}_all_bayes_factors.json"
+    save_file = f"{save_dir}/{event}_all_bayes_factors.json"
     with open(save_file, "w") as f:
         json.dump(all_bfs, f, indent=4, sort_keys=False)
 
@@ -128,48 +133,40 @@ def combine_bayes_factors_files(
 
 
 def sample_spectral_EoS_parameters(
-        event_label: str,
-        method_label: str,
-        posterior_file: str, # .dat file
+        event: str,
         method: Literal['2D', '3D'],
+        density_est_method: Literal['kde', 'flow'],
+        save_dir: str,
+        N_pool: int,
         N_walkers: int = 100,
         N_parameter_samples: int = 10_000,
-        N_pool: int = 100,
-        save_dir: str = "data/BNS/constraints",
 ):
-    samples_save_file = f'{save_dir}/{event_label}_{method_label.replace(" ", "-")}_spectral_parameter_posterior_samples'
+    samples_save_file = f'{save_dir}/{event}_{method}_spectral_parameter_posterior_samples'
 
-    #Initialize Sampler Object:
     sampler = ParameterizedEoSSampler(
-        posterior_files=[posterior_file], 
+        events=[event],
+        method=method,
         prior_bounds={
             'gamma1': {'params':{"min": 0.2, "max": 2.00}},
             'gamma2': {'params':{"min": -1.6, "max": 1.7}},
             'gamma3': {'params':{"min": -0.6, "max": 0.6}},
             'gamma4': {'params':{"min": -0.02, "max": 0.02}}
         },
-        save_file=samples_save_file,
-        methods=[method],
-        N_walkers=N_walkers, 
-        N_parameter_samples=N_parameter_samples, 
-        N_dim=4, 
+        density_est_method=density_est_method,
         parameterization='spectral',
-        N_pool=N_pool,
     )
 
-    #Run, Save , Plot
-    sampler.initialize_walkers()
-    sampler.run_sampler()
-    sampler.save_data()
+    sampler.initialize_walkers(N_walkers)
+    sampler.run_sampler(N_parameter_samples, N_pool=N_pool, N_grid=1000, save_file=samples_save_file)
 
 
 def compute_EoS_constraints_from_spectral_samples(
-        event_label: str,
+        event: str,
         method_label: str,
         spectral_samples_file: str,
         burn_in_frac: float = 0.5,
         thin_every: int = 5,
-        save_dir: str = "data/BNS/constraints"
+        save_dir: str | None = None
 ):
     # Load the samples   
     file_type = pathlib.Path(spectral_samples_file).suffix
@@ -180,8 +177,7 @@ def compute_EoS_constraints_from_spectral_samples(
     elif file_type == '.txt':
         samples = np.loadtxt(spectral_samples_file, dtype=np.float32)
     else:
-        print("Samples file type must be .h5 or .txt.")
-        return
+        raise ValueError("Samples file type must be .h5 or .txt.")
     
     # "Clean" the samples
     np.nan_to_num(samples, copy=False)
@@ -198,19 +194,24 @@ def compute_EoS_constraints_from_spectral_samples(
         logp.append(p)
 
     logp = np.array(logp)
-    logp_CIup = np.array([np.quantile(logp[:,i], 0.95) for i in range(len(rho))])
-    logp_CIlow = np.array([np.quantile(logp[:,i], 0.05) for i in range(len(rho))])
-    logp_med = np.array([np.quantile(logp[:,i], 0.5) for i in range(len(rho))])
+    logp_CIup =  np.quantile(logp, 0.95, axis=0)
+    logp_CIlow = np.quantile(logp, 0.05, axis=0)
+    logp_med =   np.quantile(logp, 0.50, axis=0)
 
-    # Save confidence interval data
-    np.savetxt(f"{save_dir}/{event_label}_{method_label.replace(" ", "-")}_confidence_interval.txt", np.array([rho, logp_CIlow, logp_med, logp_CIup]).T)
+    out = np.array([rho, logp_CIlow, logp_med, logp_CIup]).T
+
+    if save_dir is not None:
+        # Save confidence interval data
+        np.savetxt(f"{save_dir}/{event}_{method_label.replace(" ", "-")}_confidence_interval.txt", out)
+    
+    return out
 
 
 def compute_lambdas_from_spectral_EoS_samples(
-        event_label: str,
+        event: str,
         method_label: str,
         spectral_samples_file: str, # .txt
-        save_dir: str = "data/NSBH/lambdaHists"
+        save_dir: str | None = None
 ):
     # Load the samples   
     file_type = pathlib.Path(spectral_samples_file).suffix
@@ -236,15 +237,20 @@ def compute_lambdas_from_spectral_EoS_samples(
         cc = m*lal.MRSUN_SI/rr
         lambda_ = (2/3)*kk/(cc**5)
         lambdas.append(lambda_)
+    
+    lambdas = np.array(lambdas).T
 
-    np.savetxt(f"{save_dir}/{event_label}_{method_label.replace(" ", "-")}_lambdas_samples.txt", np.array(lambdas).T)
+    if save_dir is not None:
+        np.savetxt(f"{save_dir}/{event}_{method_label.replace(" ", "-")}_lambdas_samples.txt", lambdas)
+    
+    return lambdas
 
 
 def compute_max_masses_from_spectral_EoS_samples(
-        event_label: str,
+        event: str,
         method_label: str,
         spectral_samples_file: str, # .txt
-        save_dir: str = "data/BNS/massHists"
+        save_dir: str | None = None
 ):
     # Load the samples   
     file_type = pathlib.Path(spectral_samples_file).suffix
@@ -266,5 +272,10 @@ def compute_max_masses_from_spectral_EoS_samples(
         fam = lalsim.CreateSimNeutronStarFamily(EoS)
         maxMass = lalsim.SimNeutronStarMaximumMass(fam)/lal.MSUN_SI
         maxMasses.append(maxMass)
+    
+    maxMasses = np.array(maxMasses).T
 
-    np.savetxt(f"{save_dir}/{event_label}_{method_label.replace(" ", "-")}_max_masses_samples.txt", np.array(maxMasses).T)
+    if save_dir is not None:
+        np.savetxt(f"{save_dir}/{event}_{method_label.replace(" ", "-")}_max_masses_samples.txt", maxMasses)
+    
+    return maxMasses

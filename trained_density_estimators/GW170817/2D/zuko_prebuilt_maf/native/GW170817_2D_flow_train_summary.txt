@@ -1,0 +1,295 @@
+         data.shape: torch.Size([12409, 2])
+         flow: MAF(
+  (transform): LazyComposedTransform(
+    (0): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [0, 1]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (1): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [1, 0]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (2): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [0, 1]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (3): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [1, 0]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (4): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [0, 1]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (5): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [1, 0]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (6): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [0, 1]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (7): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [1, 0]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (8): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [0, 1]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (9): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [1, 0]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (10): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [0, 1]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (11): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [1, 0]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (12): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [0, 1]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (13): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [1, 0]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (14): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [0, 1]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (15): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [1, 0]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (16): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [0, 1]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (17): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [1, 0]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (18): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [0, 1]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+    (19): MaskedAutoregressiveTransform(
+      (base): MonotonicAffineTransform()
+      (order): [1, 0]
+      (hyper): MaskedMLP(
+        (0): MaskedLinear(in_features=2, out_features=64, bias=True)
+        (1): ReLU()
+        (2): MaskedLinear(in_features=64, out_features=64, bias=True)
+        (3): ReLU()
+        (4): MaskedLinear(in_features=64, out_features=4, bias=True)
+      )
+    )
+  )
+  (base): UnconditionalDistribution(DiagNormal(loc: torch.Size([2]), scale: torch.Size([2])))
+)
+         optimizer: Adam (
+Parameter Group 0
+    amsgrad: False
+    betas: (0.9, 0.98)
+    capturable: False
+    decoupled_weight_decay: False
+    differentiable: False
+    eps: 1e-08
+    foreach: None
+    fused: None
+    lr: 1e-05
+    maximize: False
+    weight_decay: 0
+)
+         N_epochs: 500
+         batch_size: 1000
+[     0 / 500]	avg. loss = 12.5768 +- 0.3787
+[    10 / 500]	avg. loss = 6.5600 +- 0.0654
+[    20 / 500]	avg. loss = 5.0520 +- 0.0557
+[    30 / 500]	avg. loss = 4.2911 +- 0.0218
+[    40 / 500]	avg. loss = 3.8659 +- 0.0420
+[    50 / 500]	avg. loss = 3.5157 +- 0.0382
+[    60 / 500]	avg. loss = 3.2134 +- 0.0246
+[    70 / 500]	avg. loss = 2.9645 +- 0.0204
+[    80 / 500]	avg. loss = 2.7698 +- 0.0444
+[    90 / 500]	avg. loss = 2.6581 +- 0.0300
+[   100 / 500]	avg. loss = 2.6095 +- 0.0340
+[   110 / 500]	avg. loss = 2.5876 +- 0.0349
+[   120 / 500]	avg. loss = 2.5769 +- 0.0316
+[   130 / 500]	avg. loss = 2.5712 +- 0.0332
+[   140 / 500]	avg. loss = 2.5678 +- 0.0353
+[   150 / 500]	avg. loss = 2.5603 +- 0.0416
+[   160 / 500]	avg. loss = 2.5595 +- 0.0229
+[   170 / 500]	avg. loss = 2.5582 +- 0.0318
+[   180 / 500]	avg. loss = 2.5545 +- 0.0379
+[   190 / 500]	avg. loss = 2.5534 +- 0.0255
+[   200 / 500]	avg. loss = 2.5506 +- 0.0261
+[   210 / 500]	avg. loss = 2.5506 +- 0.0380
+[   220 / 500]	avg. loss = 2.5490 +- 0.0529
+[   230 / 500]	avg. loss = 2.5513 +- 0.0373
+[   240 / 500]	avg. loss = 2.5495 +- 0.0339
+[   250 / 500]	avg. loss = 2.5520 +- 0.0401
+[   260 / 500]	avg. loss = 2.5472 +- 0.0373
+[   270 / 500]	avg. loss = 2.5469 +- 0.0354
+[   280 / 500]	avg. loss = 2.5455 +- 0.0304
+[   290 / 500]	avg. loss = 2.5521 +- 0.0484
+[   300 / 500]	avg. loss = 2.5428 +- 0.0385
+[   310 / 500]	avg. loss = 2.5477 +- 0.0384
+[   320 / 500]	avg. loss = 2.5450 +- 0.0353
+[   330 / 500]	avg. loss = 2.5475 +- 0.0257
+[   340 / 500]	avg. loss = 2.5490 +- 0.0417
+[   350 / 500]	avg. loss = 2.5479 +- 0.0479
+[   360 / 500]	avg. loss = 2.5499 +- 0.0493
+[   370 / 500]	avg. loss = 2.5433 +- 0.0325
+[   380 / 500]	avg. loss = 2.5434 +- 0.0347
+[   390 / 500]	avg. loss = 2.5463 +- 0.0276
+[   400 / 500]	avg. loss = 2.5485 +- 0.0377
+[   410 / 500]	avg. loss = 2.5413 +- 0.0446
+[   420 / 500]	avg. loss = 2.5465 +- 0.0568
+[   430 / 500]	avg. loss = 2.5474 +- 0.0307
+[   440 / 500]	avg. loss = 2.5464 +- 0.0343
+[   450 / 500]	avg. loss = 2.5438 +- 0.0383
+[   460 / 500]	avg. loss = 2.5444 +- 0.0506
+[   470 / 500]	avg. loss = 2.5433 +- 0.0313
+[   480 / 500]	avg. loss = 2.5432 +- 0.0319
+[   490 / 500]	avg. loss = 2.5430 +- 0.0348
+[   500 / 500]	avg. loss = 2.5433 +- 0.0424
+
+train time: 4.29 minutes

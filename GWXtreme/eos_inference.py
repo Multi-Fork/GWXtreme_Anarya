@@ -29,11 +29,12 @@ import numpy as np
 import torch
 import h5py
 import emcee
+import scipy.stats
 
-from eos_prior import is_valid_eos, create_spectral_eos, create_polytrope_eos
-from utils import *
-from density_estimation import EnsembleDensityEstimator
-from shared_config import _SUPPORTED_EVENTS, _GW_PE_POSTERIOR_FILES
+from .eos_prior import is_valid_eos, create_spectral_eos, create_polytrope_eos
+from .utils import *
+from .density_estimation import EnsembleDensityEstimator
+from .config import SUPPORTED_EVENTS, GW_PE_POSTERIOR_FILES
 
 
 class ModelSelector:
@@ -60,14 +61,14 @@ class ModelSelector:
         assert method in ['2D', '3D']
         assert density_est_method in ['kde', 'flow']
         assert parameterization in ['spectral', 'polytrope']
-        assert event in _SUPPORTED_EVENTS, f'event must be one of {_SUPPORTED_EVENTS}'
+        assert event in SUPPORTED_EVENTS, f'event must be one of {SUPPORTED_EVENTS}'
         
         self.method = method
         self.density_est_method = density_est_method
         self.parameterization = parameterization
         self.event = event
         
-        posterior_file = _GW_PE_POSTERIOR_FILES[event][method]
+        posterior_file = GW_PE_POSTERIOR_FILES[event][method]
         m1, m2, q, mc, lambda1, lambda2, lambdat = self._read_posterior_file(posterior_file)
         data = {
             'm1_source': m1,
@@ -187,79 +188,41 @@ class ModelSelector:
         assert [s1, max_mass_eos1] != [np.nan, np.nan], "The system being studied is a binary black hole system."
 
         # compute support
-        result_1 = self._integrate_posterior_for_eos_support(
+        _, _, evidence_1, evidences_1 = self._integrate_posterior_for_eos_support(
             s1, 
             max_mass_eos1,
             N_grid=N_grid,
             do_ensemble=(N_trials > 0),
             min_mass=max(self.min_mass, min_mass1),
+            N_kde_trials=N_trials
         )
 
-        result_2 = self._integrate_posterior_for_eos_support(
+        _, _, evidence_2, evidences_2 = self._integrate_posterior_for_eos_support(
             s2, 
             max_mass_eos2,
             N_grid=N_grid,
             do_ensemble=(N_trials > 0),
             min_mass=max(self.min_mass, min_mass2),
+            N_kde_trials=N_trials
         )
-        bf = result_1[2] / result_2[2]
+
+        bf = evidence_1 / evidence_2
         
-        # Iterate to determine uncertainty via re-drawing from
-        # smoothed distribution:
-        # NOTE: This is known to introduce a bias into the mean
-        # and variance estimate.
         if N_trials == 0:
-            return bf, np.array([])
+            return bf
         
-        if self.density_est_method == 'flow':
-            bf_array = result_1[3] / result_2[3]
-        else:
-            ray.init(logging_level=1) if verbose else ray.init(logging_level=40)
-
-            N_cores = multiprocessing.cpu_count()
-            if verbose: print("Total number of cores in this machine: {}".format(N_cores))
-
-            # Splitting (nearly) equally the # of trials over the # of workers
-            if N_trials < N_cores:
-                workers = N_trials
-                trials_per_worker = np.ones(workers, dtype=int)
-            else:
-                workers = N_cores
-                split = np.array_split(np.arange(N_trials), workers)
-                trials_per_worker = [len(split[i]) for i in range(N_cores)]
-
-            futures = []
-            for i, worker_trials, in enumerate(trials_per_worker):
-                future_dict = {
-                    "marginal_posterior": self.marginal_posterior,
-                    "s1": s1,
-                    "s2": s2,
-                    "max_mass_eos1": max_mass_eos1,
-                    "max_mass_eos2": max_mass_eos2, 
-                    "N_grid": N_grid,
-                    "min_mass": self.min_mass, 
-                    'N_trials': worker_trials,
-                }
-
-                futures.append(self._compute_eos_evidence_ratios_over_trials.remote(self, future_dict))
-                if verbose:
-                    print("Submitted task in core: {}".format(i+1))
-        
-            ray.get(futures)
-            bf_array = np.array([ray.get(future) for future in futures])
-            ray.shutdown()
+        bf_array = evidences_1 / evidences_2
     
         if save_file is not None:
-            bf_dict = {}
-            bf_dict['ref_eos'] = EoS2
-            bf_dict['target_eos'] = EoS1
-            bf_dict['bf'] = bf
-            bf_dict['bf_array'] = bf_array.tolist()
+            results = {
+                'ref_eos': EoS1,
+                'target_eos': EoS1,
+                'bf': bf,
+                'bf_array': bf_array.tolist()
+            }
             
             with open(save_file, 'w') as f:
-                json.dump(bf_dict, f, indent=2, sort_keys=True)
-            if verbose:
-                print(f"Result saved in: {save_file}")
+                json.dump(results, f, indent=4, sort_keys=True)
         
         return bf, bf_array
 
@@ -292,17 +255,18 @@ class ModelSelector:
 
     def _integrate_posterior_for_eos_support(
             self,
-            eosfunc,
+            eos_interpolant,
             max_mass_eos: float,
             N_grid: int = 1000,
             min_mass: float = 0.1,
-            do_ensemble: bool = False
+            do_ensemble: bool = False,
+            N_kde_trials: int = 0
         ):
         '''
         This function numerically integrates the KDE along the
         EoS curve.
 
-        eosfunc	 :: interpolation function of Λ = eosfunc(m)
+        eos_interpolant	 :: interpolation function of Λ = eos_interpolant(m)
 
         max_mass_eos :: Maximum mass allowed by the EoS.
 
@@ -324,14 +288,16 @@ class ModelSelector:
         m1, m2, q = apply_mass_constraint(m1, m2, q, min_mass)
         
         if self.method == '2D':
-            lambdat = get_lambdat_for_eos(m1, m2, max_mass_eos, eosfunc)
+            lambdat = get_lambdat_for_eos(m1, m2, max_mass_eos, eos_interpolant)
             points = np.stack((lambdat, q), axis=-1)
         else:
-            lambda1, lambda2 = get_lambda_for_eos(m1, max_mass_eos, eosfunc), get_lambda_for_eos(m2, max_mass_eos, eosfunc)
+            lambda1, lambda2 = get_lambda_for_eos(m1, max_mass_eos, eos_interpolant), get_lambda_for_eos(m2, max_mass_eos, eos_interpolant)
             lambdat = get_lambdat(m1, m2, lambda1, lambda2)
             points = np.stack((lambda1, q, lambda2), axis=-1)
 
         points = torch.tensor(points, dtype=torch.float32)
+
+        evidences = np.array([])
 
         # perform integration via trapezoidal approximation
         # use normalizing flow(s)
@@ -342,61 +308,21 @@ class ModelSelector:
             if do_ensemble:
                 ensemble_prob_density = self.density_estimator.ensemble_pdf(points).numpy()
                 evidences = np.trapezoid(ensemble_prob_density, q, axis=1)
-                return [lambdat, q, evidence, evidences]
+                
         # use KDE
         else:
             prob_density = self.density_estimator.kde_pdf(points).numpy()
             evidence = np.trapezoid(prob_density, q)
-        
-        return [lambdat, q, evidence]
 
-    @ray.remote
-    def _compute_eos_evidence_ratios_over_trials(self, fd):
-        supports_1 = []
-        supports_2 = []
+            if N_kde_trials > 0:
+                evidences = []
+                for _ in range(N_kde_trials):
+                    resampled_prob_density = self.density_estimator.kde_pdf(points, resample=True).numpy()
+                    evidences.append(np.trapezoid(resampled_prob_density, q))
+                evidences = np.array(evidences)
 
-        for _ in range(fd['trials']):
-            # generate new (synthetic) data
-            new_marginal_posterior = np.array([])
-            counter = 0
-            while len(new_marginal_posterior) < len(fd['marginal_posterior']):
-                prune_adjust_factor = 1.1 + counter / 10.
-                N_resample = int(len(fd['marginal_posterior']) * prune_adjust_factor)
-                
-                new_marginal_posterior = fd['kde'].resample(size=N_resample).T
-                
-                unphysical = [new_marginal_posterior[:, 0] < 0.0] + \
-                            [new_marginal_posterior[:, 1] > 1.0] + \
-                            [new_marginal_posterior[:, 1] < 0.0]
-                
-                new_marginal_posterior = new_marginal_posterior[~unphysical] #type:ignore
-                
-                print("Count: {}".format(counter))
-                counter += 1
-            
-            indices = np.arange(len(new_marginal_posterior))
-            chosen = np.random.choice(indices, len(fd['marginal_posterior']))
-            new_marginal_posterior = new_marginal_posterior[chosen]
+        return [lambdat, q, evidence, evidences]
 
-            # integrate to get support
-            [_, _, support_1] = self._integrate_posterior_for_eos_support(
-                fd['s1'],
-                fd['max_mass_eos1'],
-                N_grid=fd['N_grid'],                
-                min_mass=fd['min_mass']
-            )
-            [_, _, support_2] = self._integrate_posterior_for_eos_support(
-                fd['s2'],
-                fd['max_mass_eos2'],
-                N_grid=fd['N_grid'],                
-                min_mass=fd['min_mass']
-            )
-
-            # store the result
-            supports_1.append(support_1)
-            supports_2.append(support_2)
-
-        return np.array(supports_1) / np.array(supports_2)
 
     def _read_posterior_file(self, posterior_file: str):
         posterior_file_ = pathlib.Path(posterior_file)
@@ -620,24 +546,17 @@ class JointModelSelector:
             self.all_bayes_factors.append(bf)                    
 
         if save_file is not None:
-            stack_dict = {}
-            stack_dict['ref_eos'] = EoS2
-            stack_dict['target_eos'] = EoS1
-
-            stack_dict['joint_bf'] = joint_bf
-            if N_trials > 0:
-                stack_dict['joint_bf_array'] = joint_bf_array.tolist()
-            else:
-                stack_dict['joint_bf_array'] = None
-
-            stack_dict['all_bf'] = self.all_bayes_factors
-            if N_trials > 0:
-                stack_dict['all_bf_err'] = self.all_bayes_factors_errors
-            else:
-                stack_dict['all_bf_err'] = None
+            results = {
+                'ref_eos': EoS1,
+                'target_eos': EoS1,
+                'joint_bf': joint_bf,
+                'joint_bf_array': joint_bf_array.tolist() if N_trials > 0 else [],
+                'all_bf': self.all_bayes_factors,
+                'all_bf_err': self.all_bayes_factors_errors if N_trials > 0 else []
+            }
 
             with open(save_file, 'w+') as f:
-                json.dump(stack_dict, f, indent=4, sort_keys=True)
+                json.dump(results, f, indent=4, sort_keys=True)
 
         return [joint_bf, joint_bf_array] if N_trials > 0 else joint_bf
 

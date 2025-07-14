@@ -13,7 +13,7 @@ import matplotlib.patches
 import matplotlib.collections
 import matplotlib.pyplot as plt
 
-from shared_config import _SUPPORTED_EVENTS, _GW_PE_POSTERIOR_FILES, _GWXTREME_FLOW_FILES, _GWXTREME_KDE_GRID_FILES
+from gwxtreme.GWXtreme.config import SUPPORTED_EVENTS, GW_PE_POSTERIOR_FILES, GWXTREME_FLOW_FILES, GWXTREME_KDE_GRID_FILES
 
 
 def learn_flow(
@@ -56,9 +56,10 @@ def learn_flow(
         
         losses = torch.stack(losses)
 
-        progress = f"[{epoch:6d} / {N_epochs}]\tavg. loss = {losses.mean().item():3.4f} +- {losses.std().item():3.4f}"
-        training_summary += f"{progress}\n"
-        print(f'{progress}')
+        if epoch % 10 == 0:
+            progress = f"[{epoch:6d} / {N_epochs}]\tavg. loss = {losses.mean().item():3.4f} +- {losses.std().item():3.4f}"
+            training_summary += f"{progress}\n"
+            print(f'{progress}')
     
     end = time.perf_counter()
     torch.save(flow, save_file)
@@ -72,7 +73,7 @@ def learn_flow(
 
 
 def get_gw_event_pe_posterior_samples(event: str, method: str):
-    posterior_file = _GW_PE_POSTERIOR_FILES[event][method]
+    posterior_file = GW_PE_POSTERIOR_FILES[event][method]
     samples = pd.read_table(posterior_file)
 
     if method == '2D':
@@ -86,10 +87,10 @@ def get_gw_event_pe_posterior_samples(event: str, method: str):
 
 
 def get_gw_event_pe_posterior_normalizing_flows(event: str, method: str):
-    native_flow = torch.load(_GWXTREME_FLOW_FILES[event][method]['native'], weights_only=False)
+    native_flow = torch.load(GWXTREME_FLOW_FILES[event][method]['native'], weights_only=False)
     
     flow_ensemble = []
-    ensemble_dir = pathlib.Path(_GWXTREME_FLOW_FILES[event][method]['ensemble'])
+    ensemble_dir = pathlib.Path(GWXTREME_FLOW_FILES[event][method]['ensemble'])
     for file in ensemble_dir.iterdir():
         if file.suffix == '.pkl':
             flow_ensemble.append(torch.load(file, weights_only=False))
@@ -98,7 +99,7 @@ def get_gw_event_pe_posterior_normalizing_flows(event: str, method: str):
 
 
 def get_gw_event_pe_posterior_kde_grid(event: str, method: str):
-    kde_grid = torch.load(_GWXTREME_KDE_GRID_FILES[event][method])
+    kde_grid = torch.load(GWXTREME_KDE_GRID_FILES[event][method])
     return kde_grid
 
 
@@ -111,16 +112,16 @@ class EnsembleDensityEstimator:
         assert method in ['2D', '3D'], "method must be one of ['2D', '3D']"
         self.method = method
         
-        assert event in _SUPPORTED_EVENTS, f"event must be one of {_SUPPORTED_EVENTS}."
+        assert event in SUPPORTED_EVENTS, f"event must be one of {SUPPORTED_EVENTS}."
         self.event = event
         self.native_flow, self.flow_ensemble = get_gw_event_pe_posterior_normalizing_flows(event, method)
         self.kde_prob_grid = get_gw_event_pe_posterior_kde_grid(event, method)
             
-        posterior_samples = torch.stack(
+        self.posterior_samples = torch.stack(
             get_gw_event_pe_posterior_samples(event, method),
             dim=-1
         )
-        post_latent = self._to_latent_space(posterior_samples)
+        post_latent = self._to_latent_space(self.posterior_samples)
         self.kde = scipy.stats.gaussian_kde(post_latent.T.numpy())
 
     def set_normalizing_flows(self, native_flow=None, flow_ensemble: list | None = None):
@@ -151,6 +152,11 @@ class EnsembleDensityEstimator:
         
         return samples # (N_ensemble, size)
     
+    def kde_sample(self, size: int) -> torch.Tensor:
+        z = torch.tensor(self.kde.resample(size).T, dtype=torch.float32)
+        x = self._to_data_space(z)
+        return x
+
     def log_pdf(self, x: torch.Tensor) -> torch.Tensor:
         assert self.native_flow is not None, "No normalizing flow has been set."
         z = self._to_latent_space(x)
@@ -179,15 +185,21 @@ class EnsembleDensityEstimator:
     def ensemble_pdf(self, x: torch.Tensor) -> torch.Tensor:
         return torch.exp(self.ensemble_log_pdf(x))
     
-    def kde_log_pdf(self, x: torch.Tensor) -> torch.Tensor:
+    def kde_log_pdf(self, x: torch.Tensor, resample: bool = False) -> torch.Tensor:
+        if resample:
+            Z = self.kde.resample(len(self.posterior_samples))
+            kde = scipy.stats.gaussian_kde(Z)
+        else:
+            kde = self.kde
+        
         z = self._to_latent_space(x)
         ladj = self._get_log_abs_det_jacobian(x)
-        lp = torch.log(torch.tensor(self.kde(z.T.numpy()).T)) + ladj
+        lp = torch.log(torch.tensor(kde(z.T.numpy()).T)) + ladj
         lp = torch.nan_to_num(lp, nan=-torch.inf)
         return lp
 
-    def kde_pdf(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.exp(self.kde_log_pdf(x))
+    def kde_pdf(self, x: torch.Tensor, resample: bool = False) -> torch.Tensor:
+        return torch.exp(self.kde_log_pdf(x, resample=resample))
 
     def pointwise_error(self, x: torch.Tensor, N_grid: int = 10) -> torch.Tensor:
         error = torch.zeros(x.shape[0])
@@ -235,8 +247,8 @@ class EnsembleDensityEstimator:
             N_ensemble: int = 32,
             N_epochs: int = 50,
             batch_size: int = 100,
-            resample_size: int | None = None,
-            N_processors: int | None = None
+            N_processors: int = 1,
+            resample_size: int | None = None
         ):
         process_args = []
         for i in range(N_ensemble):
@@ -254,9 +266,12 @@ class EnsembleDensityEstimator:
             
             process_args.append((Z, flow, optimizer, N_epochs, batch_size, f"{save_dir}/ensemble_flow_{i}.pkl"))
         
-        if N_processors is None: N_processors = multiprocessing.cpu_count()
-        with multiprocessing.Pool(processes=N_processors) as pool:
-            pool.starmap(learn_flow, process_args)
+        if N_processors > 1:
+            with multiprocessing.Pool(processes=N_processors) as pool:
+                pool.starmap(learn_flow, process_args)
+        else:
+            for args in process_args:
+                learn_flow(*args)
     
     def score_ensemble(self, save_file: str | None = None):
         if save_file is not None:

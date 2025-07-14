@@ -10,10 +10,9 @@ import arviz as az
 import lalsimulation as lalsim
 import lal
 
-from gwxtreme.GWXtreme.eos_inference import get_lambda_for_eos
-from eos_prior import compute_log_pressure_from_eos
-
-from __shared_config import EOS_LIST
+from ..GWXtreme.utils import get_lambda_for_eos
+from ..GWXtreme.eos_prior import compute_log_pressure_from_eos
+from ..GWXtreme.config import EOS_LIST
 
 
 def plot_bayes_factors_bar_chart(
