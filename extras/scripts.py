@@ -10,17 +10,17 @@ import lal
 
 from ..GWXtreme.eos_inference import ModelSelector, ParameterizedEoSSampler
 from ..GWXtreme.eos_prior import compute_log_pressure_from_eos, create_spectral_eos
-from ..GWXtreme.config import EOS_LIST
+from ..GWXtreme.config import EOS_LIST, SUPPORTED_WAVEFORMS, LAL_NESTED_SAMPLING_PHENOM_EVIDENCES_FILE, LAL_NESTED_SAMPLING_TAYLORF2_EVIDENCES_FILE
 
 
 def compute_single_event_bayes_factors(
         event: str,
         method: Literal['2D', '3D'],
         waveform: Literal['TaylorF2', 'IMRPhenomD_NRTidalv2'],
-        density_est_method: Literal['kde', 'flow'],
+        density_est_method: Literal['kde', 'flow', 'reflectkde'],
         EoS_names: list[str] = EOS_LIST,
         N_trials: int = 10_000,
-        save_dir: str | None = None
+        save_file: str | None = None
 ):
     """
     Compute Bayes Factors for each EoS in EoS_names for a given event.
@@ -58,20 +58,21 @@ def compute_single_event_bayes_factors(
                 "resamples": bf_trials
             }
     
-    if save_dir is not None:
-        save_file = f"{save_dir}/{event}_{method.replace(" ", "-")}_{density_est_method}_bayes_factors.json"
+    if save_file is not None:
         with open(save_file, "w") as f:
-            json.dump(BFs, f, indent=4, sort_keys=True)
+            json.dump(BFs, f, indent=4)
     
     return BFs
 
 
 def compute_bayes_factors_from_nested_sampling_evidences(
         event: str,
-        method_label: str,
-        evidences_file: str, # .json
-        save_dir: str | None = None,
+        waveform: str,
+        save_file: str | None = None,
 ):
+    assert event == "GW170817" and waveform in SUPPORTED_WAVEFORMS
+    evidences_file = LAL_NESTED_SAMPLING_TAYLORF2_EVIDENCES_FILE if waveform == "TaylorF2" else LAL_NESTED_SAMPLING_PHENOM_EVIDENCES_FILE
+    method = "LALInference_NEST"
     # Opens files that originate from a single file with GW170817's nested sampling
     # evidences for each EoS. We compute the BFs w.r.t. SLY and try out multiple 
     # variations on its "error": 
@@ -81,7 +82,7 @@ def compute_bayes_factors_from_nested_sampling_evidences(
     with open(evidences_file) as f:
         evidences = json.load(f)
 
-    bayes_factors = {method_label: {}}
+    bayes_factors = {method: {waveform: {}}}
     # Compute BFs from evidences from nested sampling inference
     for EoS in EOS_LIST:
         EoS1 = evidences[EoS][0] # evidence of EoS1
@@ -105,19 +106,23 @@ def compute_bayes_factors_from_nested_sampling_evidences(
         # 3) fractional error
         err3 = BF * (((EoS1err/EoS1)**2) + ((EoS2err/EoS2)**2)) ** 0.5
         
-        bayes_factors[method_label][EoS] = [BF, [err1, err2, err3]]
+        bayes_factors[method][waveform][EoS] = {
+            "bf": BF, 
+            "quad_error": err1,
+            "worst_error": err2,
+            "fractional_error": err3
+        }
 
-    if save_dir is not None:
-        with open(f"{save_dir}/{event}_{method_label.replace(" ", "-")}_bayes_factors.json", "w+") as f:
+    if save_file is not None:
+        with open(save_file, "w") as f:
             json.dump(bayes_factors, f, indent=4, sort_keys=True)
     
     return bayes_factors
 
 
 def combine_bayes_factors_files(
-        event: str,
         bayes_factors_files: list[str],
-        save_dir: str
+        save_file: str
 ) -> str:
     all_bfs = {}
     for file in bayes_factors_files:
@@ -125,7 +130,6 @@ def combine_bayes_factors_files(
             bfs = json.load(f)
         all_bfs.update(bfs)
     
-    save_file = f"{save_dir}/{event}_all_bayes_factors.json"
     with open(save_file, "w") as f:
         json.dump(all_bfs, f, indent=4, sort_keys=False)
 
@@ -135,14 +139,12 @@ def combine_bayes_factors_files(
 def sample_spectral_EoS_parameters(
         event: str,
         method: Literal['2D', '3D'],
-        density_est_method: Literal['kde', 'flow'],
-        save_dir: str,
+        density_est_method: Literal['kde', 'flow', 'reflectkde'],
+        save_file: str,
         N_pool: int,
         N_walkers: int = 100,
-        N_parameter_samples: int = 10_000,
+        N_samples: int = 10_000,
 ):
-    samples_save_file = f'{save_dir}/{event}_{method}_spectral_parameter_posterior_samples'
-
     sampler = ParameterizedEoSSampler(
         events=[event],
         method=method,
@@ -157,23 +159,20 @@ def sample_spectral_EoS_parameters(
     )
 
     sampler.initialize_walkers(N_walkers)
-    sampler.run_sampler(N_parameter_samples, N_pool=N_pool, N_grid=1000, save_file=samples_save_file)
+    sampler.run_sampler(N_samples, N_pool=N_pool, N_grid=1000, save_file=save_file)
 
 
 def compute_EoS_constraints_from_spectral_samples(
-        event: str,
-        method_label: str,
         spectral_samples_file: str,
         burn_in_frac: float = 0.5,
         thin_every: int = 5,
-        save_dir: str | None = None
+        save_file: str | None = None
 ):
     # Load the samples   
     file_type = pathlib.Path(spectral_samples_file).suffix
     if file_type == '.h5':
         with h5py.File(spectral_samples_file) as f:
-            samples = np.array(f['chains'], dtype=np.float32)
-            samples = samples.reshape((samples.shape[0]*samples.shape[1], 4))
+            samples = np.array(f['samples'], dtype=np.float32)
     elif file_type == '.txt':
         samples = np.loadtxt(spectral_samples_file, dtype=np.float32)
     else:
@@ -190,7 +189,7 @@ def compute_EoS_constraints_from_spectral_samples(
 
     for s in samples:
         params = (s[0], s[1], s[2], s[3])
-        p = compute_log_pressure_from_eos(rho, create_spectral_eos(params))
+        p = compute_log_pressure_from_eos(rho, create_spectral_eos(s))
         logp.append(p)
 
     logp = np.array(logp)
@@ -200,29 +199,26 @@ def compute_EoS_constraints_from_spectral_samples(
 
     out = np.array([rho, logp_CIlow, logp_med, logp_CIup]).T
 
-    if save_dir is not None:
-        # Save confidence interval data
-        np.savetxt(f"{save_dir}/{event}_{method_label.replace(" ", "-")}_confidence_interval.txt", out)
+    if save_file is not None:
+        # Save credible interval data
+        np.savetxt(save_file, out)
     
     return out
 
 
 def compute_lambdas_from_spectral_EoS_samples(
-        event: str,
-        method_label: str,
         spectral_samples_file: str, # .txt
-        save_dir: str | None = None
+        save_file: str | None = None
 ):
     # Load the samples   
     file_type = pathlib.Path(spectral_samples_file).suffix
     if file_type == '.h5':
         with h5py.File(spectral_samples_file) as f:
-            samples = np.array(f['chains'], dtype=np.float32)
-            samples = samples.reshape((samples.shape[0]*samples.shape[1], 4))
+            samples = np.array(f['samples'], dtype=np.float32)
     elif file_type == '.txt':
         samples = np.loadtxt(spectral_samples_file, dtype=np.float32)
     else:
-        raise UserWarning("Samples file type must be .h5 or .txt.")
+        raise ValueError("Samples file type must be .h5 or .txt.")
     
     lambdas = []
     m = 1.4
@@ -240,28 +236,25 @@ def compute_lambdas_from_spectral_EoS_samples(
     
     lambdas = np.array(lambdas).T
 
-    if save_dir is not None:
-        np.savetxt(f"{save_dir}/{event}_{method_label.replace(" ", "-")}_lambdas_samples.txt", lambdas)
+    if save_file is not None:
+        np.savetxt(save_file, lambdas)
     
     return lambdas
 
 
 def compute_max_masses_from_spectral_EoS_samples(
-        event: str,
-        method_label: str,
-        spectral_samples_file: str, # .txt
-        save_dir: str | None = None
+        spectral_samples_file: str,
+        save_file: str | None = None
 ):
     # Load the samples   
     file_type = pathlib.Path(spectral_samples_file).suffix
     if file_type == '.h5':
         with h5py.File(spectral_samples_file) as f:
-            samples = np.array(f['chains'], dtype=np.float32)
+            samples = np.array(f['samples'], dtype=np.float32)
     elif file_type == '.txt':
         samples = np.loadtxt(spectral_samples_file, dtype=np.float32)
     else:
-        print("Samples file type must be .h5 or .txt.")
-        return
+        raise ValueError("Samples file type must be .h5 or .txt.")
     
     maxMasses = []
     m = 1.4
@@ -275,7 +268,7 @@ def compute_max_masses_from_spectral_EoS_samples(
     
     maxMasses = np.array(maxMasses).T
 
-    if save_dir is not None:
-        np.savetxt(f"{save_dir}/{event}_{method_label.replace(" ", "-")}_max_masses_samples.txt", maxMasses)
+    if save_file is not None:
+        np.savetxt(save_file, maxMasses)
     
     return maxMasses

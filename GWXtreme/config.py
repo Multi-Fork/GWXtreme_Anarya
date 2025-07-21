@@ -10,9 +10,10 @@ GW230529_PHENOM_POSTERIOR = "/home/michael/projects/eos/GWXtreme_Tasks/year3/las
 LAL_NESTED_SAMPLING_TAYLORF2_EVIDENCES_FILE = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/BNS/TaylorF2_eos_prior_narrow_evidences.json"
 LAL_NESTED_SAMPLING_PHENOM_EVIDENCES_FILE = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/BNS/IMRphenom_eos_prior_narrow_evidences.json"
 
-EOS_LIST = ["APR4_EPP","HQC18","SLY2","SLY230A","SKOP","MPA1","SKI4","SKI6","SKMP","SLY9","SK272","SK255","RS","SKI3","SKI2","SKI5","H4","MS1B_PP","MS1_PP"]
+EOS_LIST = ["APR4_EPP","HQC18","SKOP","MPA1","SKI4","SKI6","SKMP","SK272","SK255","RS","SKI3","SKI2","SKI5","H4","MS1B_PP","MS1_PP"]
 
 SUPPORTED_EVENTS = ['GW170817', 'GW190425']
+SUPPORTED_WAVEFORMS = ['TaylorF2', 'IMRPhenomD_NRTidalv2']
 
 PROJECT_DIR = pathlib.Path(__file__).parent.parent
 

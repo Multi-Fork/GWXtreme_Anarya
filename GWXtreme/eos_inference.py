@@ -15,25 +15,30 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-
-from __future__ import division, print_function
-
 import os
 import json
 import multiprocessing
 from typing import Literal
 import pathlib
 
-import ray
 import numpy as np
 import torch
 import h5py
 import emcee
-import scipy.stats
 
 from .eos_prior import is_valid_eos, create_spectral_eos, create_polytrope_eos
-from .utils import *
-from .density_estimation import EnsembleDensityEstimator
+from .utils import (
+    get_eos_interpolant_from_mass_radius_file,
+    get_eos_interpolant,
+    get_eos_interpolant_from_mass_tidal_file,
+    get_eos_interpolant_from_parameters,
+    get_masses,
+    get_lambdat,
+    get_lambda_for_eos,
+    get_lambdat_for_eos,
+    apply_mass_constraint
+)
+from .density_estimation import NormalizingFlow, TransformKDE, ReflectKDE
 from .config import SUPPORTED_EVENTS, GW_PE_POSTERIOR_FILES
 
 
@@ -43,7 +48,7 @@ class ModelSelector:
             event: str,
             prior_file: str | None = None,
             method: Literal['2D', '3D'] = '2D',
-            density_est_method: Literal['kde', 'flow'] = 'flow',
+            density_est_method: Literal['kde', 'flow', 'reflectkde'] = 'flow',
             parameterization: Literal['spectral', 'polytrope'] = 'spectral'
         ):
         '''
@@ -59,7 +64,7 @@ class ModelSelector:
                          to determine the bounds.
         '''
         assert method in ['2D', '3D']
-        assert density_est_method in ['kde', 'flow']
+        assert density_est_method in ['kde', 'flow', 'reflectkde']
         assert parameterization in ['spectral', 'polytrope']
         assert event in SUPPORTED_EVENTS, f'event must be one of {SUPPORTED_EVENTS}'
         
@@ -115,10 +120,12 @@ class ModelSelector:
                 axis=-1
             )
         
-        self.density_estimator = EnsembleDensityEstimator(
-            event=event,
-            method=method
-        )
+        if density_est_method == "flow":
+            self.density_estimator = NormalizingFlow(event=event, method=method)
+        elif density_est_method == "kde":
+            self.density_estimator = TransformKDE(event, method)
+        elif density_est_method == "reflectkde":
+            self.density_estimator = ReflectKDE(event, method)
 
     def compute_eos_evidence_ratio(
             self,
@@ -188,22 +195,22 @@ class ModelSelector:
         assert [s1, max_mass_eos1] != [np.nan, np.nan], "The system being studied is a binary black hole system."
 
         # compute support
-        _, _, evidence_1, evidences_1 = self._integrate_posterior_for_eos_support(
+        evidence_1, evidences_1 = self._integrate_posterior_for_eos_support(
             s1, 
             max_mass_eos1,
             N_grid=N_grid,
             do_ensemble=(N_trials > 0),
             min_mass=max(self.min_mass, min_mass1),
-            N_kde_trials=N_trials
+            N_kde_trials=N_trials,
         )
 
-        _, _, evidence_2, evidences_2 = self._integrate_posterior_for_eos_support(
+        evidence_2, evidences_2 = self._integrate_posterior_for_eos_support(
             s2, 
             max_mass_eos2,
             N_grid=N_grid,
             do_ensemble=(N_trials > 0),
             min_mass=max(self.min_mass, min_mass2),
-            N_kde_trials=N_trials
+            N_kde_trials=N_trials,
         )
 
         bf = evidence_1 / evidence_2
@@ -221,8 +228,8 @@ class ModelSelector:
                 'bf_array': bf_array.tolist()
             }
             
-            with open(save_file, 'w') as f:
-                json.dump(results, f, indent=4, sort_keys=True)
+            with open(save_file, 'x') as f:
+                json.dump(results, f, indent=4)
         
         return bf, bf_array
 
@@ -244,14 +251,14 @@ class ModelSelector:
         )
 
         # compute support
-        _, _, support = self._integrate_posterior_for_eos_support(
+        evidence, evidences = self._integrate_posterior_for_eos_support(
             s, 
             max_mass_eos,
             N_grid=N_grid,
             min_mass=min_mass
         )
 
-        return support
+        return evidence
 
     def _integrate_posterior_for_eos_support(
             self,
@@ -260,7 +267,7 @@ class ModelSelector:
             N_grid: int = 1000,
             min_mass: float = 0.1,
             do_ensemble: bool = False,
-            N_kde_trials: int = 0
+            N_kde_trials: int = 0,
         ):
         '''
         This function numerically integrates the KDE along the
@@ -301,7 +308,7 @@ class ModelSelector:
 
         # perform integration via trapezoidal approximation
         # use normalizing flow(s)
-        if self.density_est_method == 'flow':
+        if isinstance(self.density_estimator, NormalizingFlow):
             prob_density = self.density_estimator.pdf(points).numpy()
             evidence = np.trapezoid(prob_density, q)
             
@@ -309,20 +316,18 @@ class ModelSelector:
                 ensemble_prob_density = self.density_estimator.ensemble_pdf(points).numpy()
                 evidences = np.trapezoid(ensemble_prob_density, q, axis=1)
                 
-        # use KDE
+        # use KDE (bounded using transformation or reflection)
         else:
-            prob_density = self.density_estimator.kde_pdf(points).numpy()
+            prob_density = self.density_estimator.pdf(points).numpy()
             evidence = np.trapezoid(prob_density, q)
 
             if N_kde_trials > 0:
-                evidences = []
-                for _ in range(N_kde_trials):
-                    resampled_prob_density = self.density_estimator.kde_pdf(points, resample=True).numpy()
-                    evidences.append(np.trapezoid(resampled_prob_density, q))
-                evidences = np.array(evidences)
+                evidences = np.empty(N_kde_trials)
+                for i in range(N_kde_trials):
+                    resampled_prob_density = self.density_estimator.pdf(points, resample=True).numpy()
+                    evidences[i] = np.trapezoid(resampled_prob_density, q)
 
-        return [lambdat, q, evidence, evidences]
-
+        return evidence, evidences
 
     def _read_posterior_file(self, posterior_file: str):
         posterior_file_ = pathlib.Path(posterior_file)
@@ -412,7 +417,7 @@ class JointModelSelector:
             events: list[str],
             method: Literal['2D', '3D'] = '2D',
             prior_files: list[str] | None = None,
-            density_est_method: Literal['kde', 'flow'] = 'flow',
+            density_est_method: Literal['kde', 'flow', 'reflectkde'] = 'flow',
             parameterization: Literal['spectral', 'polytrope'] = 'spectral'
         ):
         '''
@@ -587,7 +592,7 @@ class ParameterizedEoSSampler:
             events: list[str], 
             method: Literal['2D', '3D'],
             prior_bounds: dict[str, dict[str, dict]],
-            density_est_method: Literal['kde', 'flow'] = 'flow',
+            density_est_method: Literal['kde', 'flow', 'reflectkde'] = 'flow',
             parameterization: Literal['spectral', 'polytrope'] = 'spectral',
         ):
         '''
@@ -624,7 +629,7 @@ class ParameterizedEoSSampler:
             self.keys = ['logP', 'gamma1', 'gamma2', 'gamma3']
             self.eos = create_polytrope_eos
         
-    def log_post(self, p, N_grid: int):
+    def log_post(self, parameters, N_grid: int):
         '''
         This method accepts an array of spectral parameters
         and returns their log posterior given gw data from all
@@ -636,13 +641,14 @@ class ParameterizedEoSSampler:
                 over q
         '''
         
-        params = {k:np.array([par]) for k, par in zip(self.keys, p)}
+        params = {k: np.array([par]) for k, par in zip(self.keys, parameters)}
         
         if not is_valid_eos(params, self.prior_bounds, spectral=self.parameterization == 'spectral'):
             return -np.inf
         
-        log_evidence = np.log(self.joint_selector.compute_parameterized_eos_joint_evidence(p, N_grid=N_grid))
-        return np.nan_to_num(log_evidence)
+        joint_evidence, _ = self.joint_selector.compute_parameterized_eos_joint_evidence(parameters, N_grid=N_grid)
+        log_evidence = np.log(joint_evidence)
+        return log_evidence
     
     def initialize_walkers(self, N_walkers: int):
         '''
@@ -654,7 +660,7 @@ class ParameterizedEoSSampler:
         n_valid_walkers = 0
         self.p0 = []
         while n_valid_walkers < N_walkers:
-            g = np.array(
+            gammas = np.array(
                 [
                     np.random.uniform(
                         self.prior_bounds[k]["params"]["min"], 
@@ -662,18 +668,13 @@ class ParameterizedEoSSampler:
                     ) for k in self.keys
                 ]
             )
-            params = {k:np.array([g[i]]) for i, k in enumerate(self.keys)}
+            params = {k:np.array([gammas[i]]) for i, k in enumerate(self.keys)}
     
-            if is_valid_eos(params,self.prior_bounds,spectral=self.parameterization == 'spectral'):
-                try:
-                    post = self.log_post(g, N_grid=10)
-                except ValueError as e:
-                    print(e, '\n', g, n_valid_walkers)
-                    continue
-                if post == -np.inf:
+            if is_valid_eos(params, self.prior_bounds, spectral=self.parameterization == 'spectral'):
+                if self.log_post(gammas, N_grid=10) == -np.inf:
                     continue
 
-                self.p0.append(g)
+                self.p0.append(gammas)
                 n_valid_walkers += 1
                 
     def run_sampler(self, N_samples: int, N_pool: int, N_grid: int, save_file: str):
@@ -683,9 +684,10 @@ class ParameterizedEoSSampler:
         posterior given GW data from all the 
         events.
         '''
-        
         if N_pool > 1:
-            with multiprocessing.Pool(min(multiprocessing.cpu_count(), N_pool)) as pool:
+            # MP code isn't really working yet
+            ctx = multiprocessing.get_context('fork')
+            with ctx.Pool(min(multiprocessing.cpu_count(), N_pool)) as pool:
                 sampler = emcee.EnsembleSampler(
                     nwalkers=len(self.p0), 
                     ndim=4, 
@@ -695,8 +697,8 @@ class ParameterizedEoSSampler:
                 )
                 sampler.run_mcmc(self.p0, N_samples, progress=True)
         
-                self.samples = sampler.get_chain()
-                self.logp = sampler.get_log_prob()
+                self.samples = sampler.get_chain(flat=True)
+                self.logp = sampler.get_log_prob(flat=True)
         else:
               sampler = emcee.EnsembleSampler(
                     nwalkers=len(self.p0), 
@@ -704,7 +706,7 @@ class ParameterizedEoSSampler:
                     log_prob_fn=self.log_post,
                     args=[N_grid]
                 )
-              sampler.run_mcmc(self.p0, self.samples, progress=True)
+              sampler.run_mcmc(self.p0, N_samples, progress=True)
         
               self.samples = sampler.get_chain(flat=True)
               self.logp = sampler.get_log_prob(flat=True)

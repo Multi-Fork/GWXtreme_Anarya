@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import zuko
 
-from ..GWXtreme.density_estimation import EnsembleDensityEstimator, get_gw_event_pe_posterior_samples, learn_flow
+from ..GWXtreme.density_estimation import NormalizingFlow, get_gw_event_pe_posterior_samples, learn_flow
 
 
 def train_native_flow():
@@ -61,24 +61,24 @@ def train_flow_ensemble():
 
     optimizer_constructor = torch.optim.Adam
     optimizer_kwargs = dict(
-        lr=1e-5,
+        lr=3e-5,
         betas=(0.9, 0.99)
     )
 
-    ede = EnsembleDensityEstimator(event, method)
+    ede = NormalizingFlow(event, method)
     ede.learn_ensemble(
         flow_constructor=flow_constructor,
         optimizer_constructor=optimizer_constructor,
         flow_kwargs=flow_kwargs,
         optimizer_kwargs=optimizer_kwargs,
-        save_dir=f"{out_dir}/ensemble",
-        N_epochs=200,
+        save_dir=f"{out_dir}/ensemble_10K_resample",
+        N_epochs=400,
         N_ensemble=100,
         batch_size=1000,
-        resample_size=None,
+        resample_size=10_000,
         N_processors=1
     )
    
 
 if __name__ == '__main__':
-    train_flow_ensemble()
+    pass

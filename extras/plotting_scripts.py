@@ -16,28 +16,21 @@ from ..GWXtreme.config import EOS_LIST
 
 
 def plot_bayes_factors_bar_chart(
-        event_label: str,
         bayes_factors_file: str,      # .json
-        method_labels: list[str],
-        EoS_list: list[str] = EOS_LIST,
-        nested_uncert_method: Literal["quad", "worst", "frac"] = 'quad',
-        save_dir: str = "plots/BNS/BFs",
+        method_sets: list[tuple],
+        save_file: str,
+        yscale: str = 'linear',
+        error_type: Literal['std', '2std', 'range'] = 'range',
+        EoS_list: list[str] = EOS_LIST
 ):
     with open(bayes_factors_file) as f:
         data = json.load(f)
     
-    num_methods = len(method_labels)
+    num_methods = len(method_sets)
     if num_methods > 3:
         raise UserWarning("More than 3 BFs methods not supported for plotting.")
         
     colors = ["#f94b42", "#c8c0ff", "#ffa551"]
-
-    # index of where to grab the uncert value in the bf_array for nested sampling method results.
-    # this is defined implicitly based on how these uncert methods are computed and stored by the
-    # compute_bayes_factors_from_nested_sampling_evidences() function.
-    nested_uncert_method_map = {'quad': 0, 'worst': 1, 'frac': 2}
-    
-    # the different kinds of errors we considerd for nested BFs (cause we're given evidences)
     spacing = [-.10, .10] if num_methods == 2 else [-.20, .0, .20]
    
     plt.clf()
@@ -46,28 +39,55 @@ def plot_bayes_factors_bar_chart(
 
     x_axis = np.arange(len(EoS_list))
 
-    plt.clf()
-    max_bf = 0
-    max_uncert = 0
-    
-    for i, method_label in enumerate(method_labels):
+    labels = []
+    all_bars = []
+    all_uncerts = []
+    for i, method_set in enumerate(method_sets):
+        method, waveform, density_est_method = method_set
+        label = f"{method} {density_est_method} {waveform}"
+        labels.append(label)
+
         BFs = []
         uncerts = []
 
         for eos in EoS_list:
-            BFs.append(data[method_label][eos][0]) 
-            # Because the nested BFs have their errors computed already and there's 3 different ones
-            if len(data[method_label][eos][1]) > 3: 
-                trials = np.array(data[method_label][eos][1])
-                uncerts.append(np.std(trials) * 2)
+            eos_bfs = data[method][waveform][density_est_method][eos]
+            
+            # normalizing flow results
+            if density_est_method == 'flow':
+                BFs.append(eos_bfs["native"])
+                ensemble = np.array(eos_bfs["ensemble"])
+                ensemble = ensemble[~np.isnan(ensemble)] 
+                
+                if error_type == '2std':                
+                    uncerts.append(2 * np.std(ensemble))
+                elif error_type == 'std':
+                    uncerts.append(np.std(ensemble))
+                elif error_type == 'range':
+                    uncerts.append(np.max(ensemble) - np.min(ensemble))
+            
+            # nested sampling results
+            elif density_est_method == 'lal':
+                BFs.append(eos_bfs["bf"])
+                uncerts.append(np.abs(eos_bfs["worst_error"]))
+            
+            # kde results
             else:
-                uncerts.append(np.abs(data[method_label][eos][1][nested_uncert_method_map[nested_uncert_method]])) # abs because they could be negative
+                BFs.append(eos_bfs["native"])
+                resamples = eos_bfs["resamples"]
+                
+                if error_type == '2std':                
+                    uncerts.append(2 * np.std(resamples))
+                elif error_type == 'std':
+                    uncerts.append(np.std(resamples))
+                elif error_type == 'range':
+                    uncerts.append(np.max(resamples) - np.min(resamples))
 
         plt.bar(
             x=x_axis + spacing[i],
             height=BFs,
             width=.20,
-            label=method_label,
+            label=label,
             color=colors[i]
         )
         plt.errorbar(
@@ -77,25 +97,27 @@ def plot_bayes_factors_bar_chart(
             ls="none",
             ecolor="black"
         )
-
-        max_bf = max(max_bf, max(BFs))
-        max_uncert = max(max_uncert, max(uncerts))
         
-        plt.yscale("log")
-        plt.xticks(x_axis, EoS_list, rotation=90, ha="right")
-        plt.ylim(1.0e-5, max(10., max_bf + max_uncert * 10.))
-        plt.axhline(1.0,color="k",linestyle="--",alpha=0.2)
-        plt.ylabel("Bayes-factor w.r.t SLY")
-        plt.legend(loc='lower left')
-        methods_str = '_'.join([label.replace(" ", "-") for label in method_labels])
-        plt.savefig(f"{save_dir}/{event_label}_{methods_str}_{nested_uncert_method}-error_bayes_factors.png", bbox_inches="tight")
+        all_bars += BFs
+        all_uncerts += uncerts
+    
+    if yscale == 'log':
+        plt.yscale('log')
+        plt.ylim(1.0e-5, 10.)
+    else:
+        # plt.ylim(0., 1.1 * np.add(all_bars, all_uncerts).max())
+        plt.ylim(bottom=0.)
+    
+    plt.xticks(x_axis, EoS_list, rotation=90, ha="right")
+    plt.axhline(1.0,color="k",linestyle="--",alpha=0.2)
+    plt.ylabel("Bayes-factor w.r.t SLY")
+    plt.legend(loc='upper right')
+    plt.savefig(save_file, bbox_inches="tight")
 
 
 def plot_BNS_parameter_corner(
-        event_label: str,
-        posterior_label: str,
         posterior_file: str, # .json
-        save_dir: str,
+        save_file: str,
         EoS: str = "APR4_EPP",
 ):
     with open(posterior_file) as f:
@@ -158,20 +180,17 @@ def plot_BNS_parameter_corner(
             ax = axes[yi, xi]
             ax.plot(EoS_values[xi], EoS_values[yi], color="red")
 
-    plt.savefig(f"{save_dir}/{event_label}_{posterior_label}_{EoS}_corner.png")
+    plt.savefig(save_file)
 
 
 def plot_EoS_constraints(
-        event_label: str,
         constraints_files: list[str],
-        method_labels: list[str],
-        EoS_list: list[str] = ["APR4_EPP"],
-        save_dir: str = "plots/BNS/constraints"
+        labels: list[str],
+        EoS_list: list[str],
+        save_file: str
 ):
-    num_methods = len(constraints_files)
-
-    colors = ['#beaed4','#fdc086'] if num_methods == 2 else ['#ffffb3','#bebada','#fb8072']
-    hatches = ["","x"] if num_methods == 2 else ["|","-",""]
+    colors = ["#2D199A","#33af37","#ea7164"]
+    hatches = ["","|","-"]
 
     plt.figure(figsize=(12,12))
     plt.rc('font', size=20)
@@ -181,31 +200,29 @@ def plot_EoS_constraints(
     plt.rc('lines', linewidth=2)
 
     rho = 0 # just to define the var
-    for file, method_label, color, hatch in zip(constraints_files, method_labels, colors, hatches):
+    for file, label, color, hatch in zip(constraints_files, labels, colors, hatches):
         # Load the samples
         # nest result is named differently
         rho, lower_bound, median, upper_bound = np.loadtxt(file).T
-        plt.fill_between(np.log10(rho), lower_bound, upper_bound, color=color, alpha=0.45, label=method_label, zorder=1., hatch=hatch)
+        plt.fill_between(np.log10(rho), lower_bound, upper_bound, color=color, alpha=0.45, label=label, zorder=1., hatch=hatch)
     
     for EoS in EoS_list:
         logp = compute_log_pressure_from_eos(rho, lalsim.SimNeutronStarEOSByName(EoS))
-        plt.plot(np.log10(rho), logp, linewidth=2.0, label=EoS, alpha=0.35)
+        plt.plot(np.log10(rho), logp, 'k', linewidth=2.0, label=EoS, alpha=0.45)
 
     plt.xlim([min(np.log10(rho)), 18.25])
     plt.xlabel(r'$\log10{\frac{\rho}{g cm^-3}}$',fontsize=20)
     plt.ylabel(r'$log10(\frac{p}{dyne cm^{-2}})$',fontsize=20)
     plt.legend()
-    methods_str = '_'.join([label.replace(" ", "-") for label in method_labels])
-    plt.savefig(f"{save_dir}/{event_label}_{methods_str}_constraints.png", bbox_inches='tight')
+    plt.savefig(save_file, bbox_inches='tight')
 
 
 def plot_lambdas_from_spectral_EoS_parameters(
-        event_label: str,
         lambdas_samples_files: list[str],
         method_labels: list[str],
         colors: list[str],
-        eos_name: str = "APR4_EPP",
-        save_dir: str = "plots/NSBH/lambdaHists"
+        save_file: str,
+        EoS: str = "APR4_EPP"
 ):
     m = 1.4
     eos = lalsim.SimNeutronStarEOSByName(eos_name)
@@ -227,21 +244,19 @@ def plot_lambdas_from_spectral_EoS_parameters(
         Lambdas = np.loadtxt(file).T
         plt.hist(Lambdas, label=method_label, alpha=0.45, fill=True, density=True, color=color, histtype='step')
 
-    plt.axvline(x=eosLambda, label=eos_name, color="black")
+    plt.axvline(x=eosLambda, label=EoS, color="black")
     plt.xlabel(r"$\Lambda$(1.4)",fontsize=20)
     plt.yticks([])
     plt.legend()
-    methods_str = '_'.join([label.replace(" ", "-") for label in method_labels])
-    plt.savefig(f"{save_dir}/{event_label}_{methods_str}_lambdas_samples.png", bbox_inches='tight')
+    plt.savefig(save_file, bbox_inches='tight')
 
 
 def plot_max_masses_from_spectral_EoS_parameters(
-        event_label: str,
         max_masses_samples_files: list[str],
         method_labels: list[str],
         colors: list[str],
-        eos_name: str = "APR4_EPP",
-        save_dir: str = "plots/BNS/massHists"
+        save_file: str,
+        EoS: str = "APR4_EPP",
 ):
     m = 1.4
     eos = lalsim.SimNeutronStarEOSByName(eos_name)
@@ -259,10 +274,9 @@ def plot_max_masses_from_spectral_EoS_parameters(
         MaxMasses = np.loadtxt(file).T
         plt.hist(MaxMasses, label=method_label, alpha=0.45, fill=True, density=True, color=color, histtype='step')
 
-    plt.axvline(x=eosMaxMass, label=eos_name, color="black")
+    plt.axvline(x=eosMaxMass, label=EoS, color="black")
 
     plt.xlabel("Max NS Mass", fontsize=20)
     plt.yticks([])
     plt.legend()
-    methods_str = '_'.join([label.replace(" ", "-") for label in method_labels])
-    plt.savefig(f"{save_dir}/{event_label}_{methods_str}_max_masses_samples.png", bbox_inches='tight')
+    plt.savefig(save_file, bbox_inches='tight')
