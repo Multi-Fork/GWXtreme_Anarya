@@ -6,12 +6,14 @@ import numpy as np
 from scipy.interpolate import interp1d
 import corner
 import arviz as az
+import h5py
 
 import lalsimulation as lalsim
 import lal
 
 from ..GWXtreme.utils import get_lambda_for_eos
 from ..GWXtreme.eos_prior import compute_log_pressure_from_eos
+from ..GWXtreme.eos_inference import ParameterizedEoSSampler
 from ..GWXtreme.config import EOS_LIST
 
 
@@ -116,25 +118,21 @@ def plot_bayes_factors_bar_chart(
 
 
 def plot_BNS_parameter_corner(
-        posterior_file: str, # .json
+        posterior_file: str,
         save_file: str,
         EoS: str = "APR4_EPP",
 ):
     with open(posterior_file) as f:
         data = json.load(f)['posterior']['content']
     
-    try:
-        m1, m2, q, mc, Lambda1, Lambda2 = (
-            np.array(data['m1_source']),
-            np.array(data['m2_source']),
-            np.array(data['q']),
-            np.array(data['mc_source']),
-            np.array(data['lambda_1']),
-            np.array(data['lambda_2'])
-            )
-    except KeyError as e:
-        print(f"Posterior samples must contain 'lambda_1' and 'lambda_2'.\nError:{str(e)}")
-        return
+    m1, m2, q, mc, Lambda1, Lambda2 = (
+        np.array(data['m1_source']),
+        np.array(data['m2_source']),
+        np.array(data['q']),
+        np.array(data['mc_source']),
+        np.array(data['lambda_1']),
+        np.array(data['lambda_2'])
+        )
 
     # Obtain EoS curve
     eos = lalsim.SimNeutronStarEOSByName(EoS)
@@ -214,6 +212,50 @@ def plot_EoS_constraints(
     plt.xlabel(r'$\log10{\frac{\rho}{g cm^-3}}$',fontsize=20)
     plt.ylabel(r'$log10(\frac{p}{dyne cm^{-2}})$',fontsize=20)
     plt.legend()
+    plt.savefig(save_file, bbox_inches='tight')
+
+
+def plot_parameterized_eos_posterior(
+        samples_files: list[str],
+        labels: list[str],
+        save_file: str,
+        burn_in_frac: float = 0.5,
+        thinning: int | None = None
+):
+    assert len(samples_files) <= 3
+    colors = ["#2D199A","#33af37","#ea7164"]
+    fig, ax = plt.subplots(2, 2, figsize=(10, 10))
+
+    sampler = ParameterizedEoSSampler(['GW170817'], '2D', prior_bounds={})
+    
+    for file, label, color in zip(samples_files, labels, colors):
+        sampler.load_samples(samples_file=file)
+        samples = sampler.parse_samples(burn_in_frac, thinning)
+        
+        means = np.mean(samples, axis=0)
+
+        n_bins = None
+        
+        n, _, _ = ax[0, 0].hist(samples[:, 0], bins=n_bins, density=True, label=label, color=color, histtype='step')
+        ax[0, 0].vlines(means[0], 0., np.max(n), color=color, linestyle='dashed')
+        ax[0, 0].set_xlabel(r"$\gamma_1$")
+        ax[0, 0].legend()
+        
+        n, _, _ = ax[0, 1].hist(samples[:, 1], bins=n_bins, density=True, label=label, color=color, histtype='step')
+        ax[0, 1].vlines(means[1], 0., np.max(n), color=color, linestyle='dashed')
+        ax[0, 1].set_xlabel(r"$\gamma_2$")
+        ax[0, 1].legend()
+
+        n, _, _ = ax[1, 0].hist(samples[:, 2], bins=n_bins, density=True, label=label, color=color, histtype='step')
+        ax[1, 0].vlines(means[2], 0., np.max(n), color=color, linestyle='dashed')
+        ax[1, 0].set_xlabel(r"$\gamma_3$")
+        ax[1, 0].legend()
+
+        n, _, _ = ax[1, 1].hist(samples[:, 3], bins=n_bins, density=True, label=label, color=color, histtype='step')
+        ax[1, 1].vlines(means[3], 0., np.max(n), color=color, linestyle='dashed')
+        ax[1, 1].set_xlabel(r"$\gamma_4$")
+        ax[1, 1].legend()
+    
     plt.savefig(save_file, bbox_inches='tight')
 
 

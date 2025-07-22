@@ -1,5 +1,8 @@
 from typing import Literal
+import json
+import pathlib
 
+import h5py
 import numpy as np
 import scipy.interpolate
 
@@ -241,3 +244,87 @@ def get_eos_interpolant_from_parameters(
     s = scipy.interpolate.interp1d(grav_masses, lambdas)
     
     return([s, grav_masses, max_mass, max(m_min, min_mass)])
+
+
+def _read_posterior_file(posterior_file: str, method):
+    assert method in ['2D', '3D']
+
+    posterior_file_ = pathlib.Path(posterior_file)
+    ext = posterior_file_.suffix
+
+    m1, m2, q, mc, lambda1, lambda2, lambdat = None, None, None, None, None, None, None
+
+    if ext == '.h5':
+        with h5py.File(posterior_file_) as f:
+            data = np.array(f['posterior_samples'])
+        
+        if method == '2D':
+            m1 = np.array(data['m1_source'])
+            m2 = np.array(data['m2_source'])
+            q = np.array(data['q'])
+            mc = np.array(data['mc_source'])
+            lambdat = np.array(data['lambdat'])
+        
+        elif method == '3D':
+            m1 = np.array(data['m1_source'])
+            m2 = np.array(data['m2_source'])
+            q = np.array(data['q'])
+            mc = np.array(data['mc_source'])
+            lambda1 = np.array(data['lambda_1'])
+            lambda2 = np.array(data['lambda_2'])
+
+    elif ext == '.txt':
+        data = np.loadtxt(posterior_file)
+        if method == '2D':
+            m1 = np.array(data[0])
+            m2 = np.array(data[1])
+            q = np.array(data[2])
+            mc = np.array(data[3])
+            lambdat = np.array(data[4])
+
+        elif method == '3D':
+            m1 = np.array(data[0])
+            m2 = np.array(data[1])
+            q = np.array(data[2])
+            mc = np.array(data[3])
+            lambda1 = np.array(data[4])
+            lambda2 = np.array(data[5])
+
+    elif ext == '.json':
+        with open(posterior_file) as f:
+            data = json.load(f)['posterior']['content']
+        
+        if method == '2D':
+            m1 = np.array(data['m1_source'])
+            m2 = np.array(data['m2_source'])
+            q = np.array(data['q'])
+            mc = np.array(data['mc_source'])
+            lambdat = np.array(data['lambdat'])
+        
+        elif method == '3D':
+            m1 = np.array(data['m1_source'])
+            m2 = np.array(data['m2_source'])
+            q = np.array(data['q'])
+            mc = np.array(data['mc_source'])
+            lambda1 = np.array(data['lambda_1'])
+            lambda2 = np.array(data['lambda_2'])
+
+    else:
+        data = np.genfromtxt(posterior_file, names=True)
+        
+        if method == '2D':
+            m1 = np.array(data['m1_source'])
+            m2 = np.array(data['m2_source'])
+            q = np.array(data['q'])
+            mc = np.array(data['mc_source'])
+            lambdat = np.array(data['lambdat'])
+        
+        elif method == '3D':
+            m1 = np.array(data['m1_source'])
+            m2 = np.array(data['m2_source'])
+            q = np.array(data['q'])
+            mc = np.array(data['mc_source'])
+            lambda1 = np.array(data['lambda_1'])
+            lambda2 = np.array(data['lambda_2'])
+    
+    return m1, m2, q, mc, lambda1, lambda2, lambdat

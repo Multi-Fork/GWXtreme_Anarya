@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from ..GWXtreme.config import EOS_LIST
+from ..GWXtreme.density_estimation import NormalizingFlow
 from .scripts import (
     compute_bayes_factors_from_nested_sampling_evidences, 
     compute_single_event_bayes_factors,
@@ -13,7 +14,8 @@ from .scripts import (
 )
 from .plotting_scripts import (
     plot_bayes_factors_bar_chart,
-    plot_EoS_constraints
+    plot_EoS_constraints,
+    plot_parameterized_eos_posterior
 )
 
 
@@ -74,7 +76,7 @@ def compute_bayes_factors(save_file):
         "flow",
         EOS_LIST,
         N_trials=N_trials,
-        save_dir=None
+        save_file=None
     )
     end = time.perf_counter()
     print(f"flow time = {end - start}")
@@ -87,7 +89,7 @@ def compute_bayes_factors(save_file):
         "kde",
         EoS_names=EOS_LIST,
         N_trials=N_trials,
-        save_dir=None
+        save_file=None
     )
     end = time.perf_counter()
     print(f"kde time = {end - start}")
@@ -136,12 +138,11 @@ def plot_bar_chart(bf_file):
     ]
     
     plot_bayes_factors_bar_chart(
-        event, 
         bf_file, 
         method_sets,
         yscale='linear',
         error_type='2std',
-        save_dir=save_dir
+        save_file=f"{save_dir}/{event}_bfs.png"
     )
 
 
@@ -172,7 +173,7 @@ def add_old_kde_results():
 def sample_spectral_params():
     event = 'GW170817'
     method = '2D'
-    de_method = 'reflectkde'
+    de_method = 'kde'
 
     sample_spectral_EoS_parameters(
         event=event,
@@ -181,12 +182,12 @@ def sample_spectral_params():
         save_file=f"{outdir}/constraints/{event}/{event}_{method}_{de_method}_spectral_posterior_samples_10K.h5",
         N_pool=1,
         N_walkers=50,
-        N_parameter_samples=10000
+        N_samples=10000
     )
 
 
 def plot_constraints():
-    flow_samples_file = f"{outdir}/constraints/GW170817/GW170817_2D_flow_spectral_posterior_samples.h5"
+    flow_samples_file = f"{outdir}/constraints/GW170817/GW170817_2D_flow_spectral_posterior_samples_10K.h5"
     flow_constraints_file = f"{outdir}/constraints/GW170817/GW170817_2D_flow_spectral_constraints.txt"
 
     kde_samples_file = f"{outdir}/constraints/GW170817/GW170817_2D_kde_spectral_posterior_samples.h5"
@@ -195,10 +196,10 @@ def plot_constraints():
     reflectkde_samples_file = f"{outdir}/constraints/GW170817/GW170817_2D_reflectkde_spectral_posterior_samples.h5"
     reflectkde_constraints_file = f"{outdir}/constraints/GW170817/GW170817_2D_reflectkde_spectral_constraints.txt"
 
-    # compute_EoS_constraints_from_spectral_samples(
-    #     flow_samples_file, 
-    #     save_file=flow_constraints_file
-    # )
+    compute_EoS_constraints_from_spectral_samples(
+        flow_samples_file, 
+        save_file=flow_constraints_file
+    )
     # compute_EoS_constraints_from_spectral_samples(
     #     kde_samples_file, 
     #     save_file=kde_constraints_file
@@ -224,10 +225,37 @@ def plot_constraints():
     )
 
 
+def plot_posterior():
+    flow_samples_file = f"{outdir}/constraints/GW170817/GW170817_2D_flow_spectral_posterior_samples_10K.h5"
+    kde_samples_file = f"{outdir}/constraints/GW170817/GW170817_2D_kde_spectral_posterior_samples.h5"
+    reflectkde_samples_file = f"{outdir}/constraints/GW170817/GW170817_2D_reflectkde_spectral_posterior_samples.h5"
+
+    plot_parameterized_eos_posterior(
+        [
+            flow_samples_file, 
+            kde_samples_file, 
+            reflectkde_samples_file
+        ],
+        [
+            '2D Flow', 
+            '2D Transformed KDE', 
+            '2D Reflective KDE'
+        ],
+        save_file=f"{outdir}/constraints/GW170817/GW170817_2D_spectral_posterior_all.png",
+    )
+
+
+
 if __name__ == '__main__':
+    event = 'GW230529'
+    method = '3D'
+    flow = NormalizingFlow(event, method)
+    flow.plot_density(50, f'./{event}_{method}_flow_density.png')
+    
     # bf_file = f"/home/joseph/LocalProjects/GWXtreme/systematics/comparing_KDE_and_normalizing_flows/GW170817/all_bayes_factors_2K_trials.json"
     # compute_bayes_factors(bf_file)
     # plot_bar_chart(bf_file)
 
-    sample_spectral_params()
-    #plot_constraints()
+    # sample_spectral_params()
+    # plot_constraints()
+    # plot_posterior()

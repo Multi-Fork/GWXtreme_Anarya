@@ -14,6 +14,7 @@ import matplotlib.collections
 import matplotlib.pyplot as plt
 
 from .config import SUPPORTED_EVENTS, GW_PE_POSTERIOR_FILES, GWXTREME_FLOW_FILES, GWXTREME_KDE_GRID_FILES
+from .utils import _read_posterior_file
 
 
 def learn_flow(
@@ -150,14 +151,15 @@ def score_ensemble(event: str, method: str, ensemble_dir: str, save_file: str | 
 
 def get_gw_event_pe_posterior_samples(event: str, method: str):
     posterior_file = GW_PE_POSTERIOR_FILES[event][method]
-    samples = pd.read_table(posterior_file)
-
+    
+    m1, m2, q, mc, lambda1, lambda2, lambdat = _read_posterior_file(posterior_file, method)
+    
     if method == '2D':
-        return torch.tensor(samples['lambdat'], dtype=torch.float32), torch.tensor(samples['q'], dtype=torch.float32)
+        return torch.tensor(lambdat, dtype=torch.float32), torch.tensor(q, dtype=torch.float32)
     elif method == '3D':
-        return torch.tensor(samples['lambda_1'], dtype=torch.float32), \
-            torch.tensor(samples['q'], dtype=torch.float32), \
-            torch.tensor(samples['lambda_2'], dtype=torch.float32)
+        return torch.tensor(lambda1, dtype=torch.float32), \
+            torch.tensor(q, dtype=torch.float32), \
+            torch.tensor(lambda2, dtype=torch.float32)
     else:
         raise NotImplementedError()
 
@@ -490,26 +492,66 @@ class NormalizingFlow:
         torch.save(box_probs, save_file)
 
     def plot_density(self, N_grid: int = 200, save_file: str | None = None):
-        assert self.method == '2D', 'can not plot 3D distribution'
-        
-        lambdat, q = get_gw_event_pe_posterior_samples(self.event, self.method) # type: ignore
+        if self.method == '2D':        
+            lambdat, q = get_gw_event_pe_posterior_samples(self.event, self.method) # type: ignore
 
-        fig, ax = plt.subplots(figsize=(7, 7))
-        lt_grid, q_grid = torch.meshgrid([torch.linspace(0., lambdat.max(), N_grid), torch.linspace(0.0, 1.0, N_grid)])
-        points = torch.stack([lt_grid, q_grid], dim=-1).reshape((N_grid**2, 2))
-        lp = self.log_pdf(points).reshape((N_grid, N_grid)).detach()
-        p = torch.exp(lp)
+            fig, ax = plt.subplots(figsize=(7, 7))
+            lt_grid, q_grid = torch.meshgrid([torch.linspace(0., lambdat.max(), N_grid), torch.linspace(0.0, 1.0, N_grid)])
+            points = torch.stack([lt_grid, q_grid], dim=-1).reshape((N_grid**2, 2))
+            lp = self.log_pdf(points).reshape((N_grid, N_grid)).detach()
+            p = torch.exp(lp)
 
-        qcs = ax.contourf(lt_grid, q_grid, p, cmap='inferno')
-        plt.colorbar(qcs, ax=ax)
-        ax.scatter(x=lambdat, y=q, s=0.25, c='gray', alpha=0.40)
-        ax.set_title(self.event)
-        ax.set_xlabel(r'$\tilde{\Lambda}$', fontsize=14)
-        ax.set_ylabel(r'$q$', fontsize=14)
+            qcs = ax.contourf(lt_grid, q_grid, p, cmap='inferno')
+            plt.colorbar(qcs, ax=ax)
+            ax.scatter(x=lambdat, y=q, s=0.25, c='gray', alpha=0.40)
+            ax.set_title(self.event)
+            ax.set_xlabel(r'$\tilde{\Lambda}$', fontsize=14)
+            ax.set_ylabel(r'$q$', fontsize=14)
+
+        else:
+            lambda1, q, lambda2 = get_gw_event_pe_posterior_samples(self.event, self.method) # type: ignore
+
+            fig, ax = plt.subplots(1, 3, figsize=(18, 6), width_ratios=[0.20, 0.20, 0.20])
+
+            l1_arr = torch.linspace(0., lambda1.max(), N_grid)
+            q_arr = torch.linspace(0., 1.0, N_grid)
+            l2_arr = torch.linspace(0., lambda2.max(), N_grid)
+
+            l1_grid, q_grid, l2_grid = torch.meshgrid([l1_arr, q_arr, l2_arr], indexing='xy')
+            points = torch.stack([l1_grid, q_grid, l2_grid], dim=-1).reshape((N_grid**3, 3))
+
+            p = self.pdf(points).reshape((N_grid, N_grid, N_grid))
+
+            l1_q_p = torch.trapezoid(p, l2_arr, dim=2)
+            l1_l2_p = torch.trapezoid(p, l1_arr, dim=0).T
+            l2_q_p = torch.trapezoid(p, q_arr, dim=1)
+
+            print(p.shape)
+            print(l1_q_p.shape)
+
+            qcs = ax[0].contourf(l1_arr, q_arr, l1_q_p, cmap='inferno', levels=30)
+            plt.colorbar(qcs, ax=ax[0])
+            ax[0].scatter(lambda1, q, s=0.1, c='gray', alpha=0.10)
+            ax[0].set_xlabel(r"$\Lambda_1$")
+            ax[0].set_ylabel(r"$q$")
+
+            qcs = ax[1].contourf(l2_arr, q_arr, l2_q_p, cmap='inferno', levels=30)
+            plt.colorbar(qcs, ax=ax[1])
+            ax[1].scatter(lambda2, q, s=0.2, c='gray', alpha=0.30)
+            ax[1].set_xlabel(r"$\Lambda_2$")
+            ax[1].set_ylabel(r"$q$")
+
+            qcs = ax[2].contourf(l1_arr, l2_arr, l1_l2_p, cmap='inferno', levels=30)
+            plt.colorbar(qcs, ax=ax[2])
+            ax[2].scatter(lambda1, lambda2, s=0.2, c='gray', alpha=0.30)
+            ax[2].set_xlabel(r"$\Lambda_1$")
+            ax[2].set_ylabel(r"$\Lambda_2$")
+
         if save_file is not None:
-            fig.savefig(save_file)
+            fig.savefig(save_file, bbox_inches='tight', dpi='figure')
         else:
             plt.show()
+
     
     def plot_error(self, save_file: str | None = None):
         assert self.method == '2D', 'can not plot 3D distribution'

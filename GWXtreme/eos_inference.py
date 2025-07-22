@@ -36,7 +36,8 @@ from .utils import (
     get_lambdat,
     get_lambda_for_eos,
     get_lambdat_for_eos,
-    apply_mass_constraint
+    apply_mass_constraint,
+    _read_posterior_file
 )
 from .density_estimation import NormalizingFlow, TransformKDE, ReflectKDE
 from .config import SUPPORTED_EVENTS, GW_PE_POSTERIOR_FILES
@@ -74,7 +75,7 @@ class ModelSelector:
         self.event = event
         
         posterior_file = GW_PE_POSTERIOR_FILES[event][method]
-        m1, m2, q, mc, lambda1, lambda2, lambdat = self._read_posterior_file(posterior_file)
+        m1, m2, q, mc, lambda1, lambda2, lambdat = _read_posterior_file(posterior_file, method)
         data = {
             'm1_source': m1,
             'm2_source': m2,
@@ -328,87 +329,6 @@ class ModelSelector:
                     evidences[i] = np.trapezoid(resampled_prob_density, q)
 
         return evidence, evidences
-
-    def _read_posterior_file(self, posterior_file: str):
-        posterior_file_ = pathlib.Path(posterior_file)
-        ext = posterior_file_.suffix
-
-        m1, m2, q, mc, lambda1, lambda2, lambdat = None, None, None, None, None, None, None
-
-        if ext == '.h5':
-            with h5py.File(posterior_file_) as f:
-                data = np.array(f['posterior_samples'])
-            
-            if self.method == '2D':
-                m1 = np.array(data['m1_source'])
-                m2 = np.array(data['m2_source'])
-                q = np.array(data['q'])
-                mc = np.array(data['mc_source'])
-                lambdat = np.array(data['lambdat'])
-            
-            elif self.method == '3D':
-                m1 = np.array(data['m1_source'])
-                m2 = np.array(data['m2_source'])
-                q = np.array(data['q'])
-                mc = np.array(data['mc_source'])
-                lambda1 = np.array(data['lambda_1'])
-                lambda2 = np.array(data['lambda_2'])
-
-        elif ext == '.txt':
-            data = np.loadtxt(posterior_file)
-            if self.method == '2D':
-                m1 = np.array(data[0])
-                m2 = np.array(data[1])
-                q = np.array(data[2])
-                mc = np.array(data[3])
-                lambdat = np.array(data[4])
-
-            elif self.method == '3D':
-                m1 = np.array(data[0])
-                m2 = np.array(data[1])
-                q = np.array(data[2])
-                mc = np.array(data[3])
-                lambda1 = np.array(data[4])
-                lambda2 = np.array(data[5])
-
-        elif ext == '.json':
-            with open(posterior_file) as f:
-                data = json.load(f)['posterior']['content']
-            
-            if self.method == '2D':
-                m1 = np.array(data['m1_source'])
-                m2 = np.array(data['m2_source'])
-                q = np.array(data['q'])
-                mc = np.array(data['mc_source'])
-                lambdat = np.array(data['lambdat'])
-            
-            elif self.method == '3D':
-                m1 = np.array(data['m1_source'])
-                m2 = np.array(data['m2_source'])
-                q = np.array(data['q'])
-                mc = np.array(data['mc_source'])
-                lambda1 = np.array(data['lambda_1'])
-                lambda2 = np.array(data['lambda_2'])
-
-        else:
-            data = np.genfromtxt(posterior_file, names=True)
-            
-            if self.method == '2D':
-                m1 = np.array(data['m1_source'])
-                m2 = np.array(data['m2_source'])
-                q = np.array(data['q'])
-                mc = np.array(data['mc_source'])
-                lambdat = np.array(data['lambdat'])
-            
-            elif self.method == '3D':
-                m1 = np.array(data['m1_source'])
-                m2 = np.array(data['m2_source'])
-                q = np.array(data['q'])
-                mc = np.array(data['mc_source'])
-                lambda1 = np.array(data['lambda_1'])
-                lambda2 = np.array(data['lambda_2'])
-        
-        return m1, m2, q, mc, lambda1, lambda2, lambdat
 
 
 class JointModelSelector:
@@ -745,7 +665,8 @@ class ParameterizedEoSSampler:
                 thinning = int(max(np.array(emcee.autocorr.integrated_time(self.samples))) / 2.)
             except emcee.autocorr.AutocorrError as e:
                 print(e)
-
+        
+        thinning = max(thinning, 1)
         return self.samples[burn_in::thinning]
     
     def load_samples(self, samples_file):

@@ -7,12 +7,12 @@ GW170817_POSTERIOR_ULS_PHENOM_PRIOR = "/home/michael/projects/eos/GWXtreme_Tasks
 
 GW230529_PHENOM_POSTERIOR = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/NSBH/gw230529_phenom_lowSpin.json"
 
-LAL_NESTED_SAMPLING_TAYLORF2_EVIDENCES_FILE = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/BNS/TaylorF2_eos_prior_narrow_evidences.json"
-LAL_NESTED_SAMPLING_PHENOM_EVIDENCES_FILE = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/BNS/IMRphenom_eos_prior_narrow_evidences.json"
+LAL_NESTED_SAMPLING_TAYLORF2_EVIDENCES_FILE = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/BNS/TaylorF2_eos_prior_broad_evidences.json"
+LAL_NESTED_SAMPLING_PHENOM_EVIDENCES_FILE = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/BNS/IMRphenom_eos_prior_broad_evidences.json"
 
 EOS_LIST = ["APR4_EPP","HQC18","SKOP","MPA1","SKI4","SKI6","SKMP","SK272","SK255","RS","SKI3","SKI2","SKI5","H4","MS1B_PP","MS1_PP"]
 
-SUPPORTED_EVENTS = ['GW170817', 'GW190425']
+SUPPORTED_EVENTS = ['GW170817', 'GW190425', 'GW230529']
 SUPPORTED_WAVEFORMS = ['TaylorF2', 'IMRPhenomD_NRTidalv2']
 
 PROJECT_DIR = pathlib.Path(__file__).parent.parent
@@ -25,6 +25,9 @@ GW_PE_POSTERIOR_FILES = {
     'GW190425': {
         '2D': fr"{PROJECT_DIR}/GW_event_PE_samples/GW190425/posterior_samples/GW190425_posterior_samples_broad_spin_prior.dat",
         '3D': ""
+    },
+    'GW230529': {
+        '3D': fr"{PROJECT_DIR}/GW_event_PE_samples/GW230529/posterior_samples/GW230529_posterior_samples_phenom_lowspin.json"
     }
 }
 
@@ -48,7 +51,13 @@ GWXTREME_FLOW_FILES = {
             'native': "",
             'ensemble': ""
         }
-    }
+    },
+    'GW230529': {
+        '3D': {
+            'native': fr"{PROJECT_DIR}/trained_density_estimators/GW230529/3D/zuko_prebuilt_maf/native/GW230529_3D_flow.pkl",
+            'ensemble': fr"{PROJECT_DIR}/trained_density_estimators/GW230529/3D/zuko_prebuilt_maf/ensemble"
+        }
+    },
 }
 
 GWXTREME_KDE_GRID_FILES = {
@@ -59,5 +68,9 @@ GWXTREME_KDE_GRID_FILES = {
     'GW190425': {
         '2D': fr"{PROJECT_DIR}/trained_density_estimators/GW170817/2D/GW170817_2D_kde_probability_grid_250K.pt",
         '3D': ""
-    }
+    },
+    'GW230529': {
+        '3D': fr"{PROJECT_DIR}/trained_density_estimators/GW170817/2D/GW170817_2D_kde_probability_grid_250K.pt",
+    },
+    
 }
