@@ -188,9 +188,7 @@ def compute_EoS_constraints_from_spectral_samples(
     rho = np.logspace(17.1, 18.25, 1000)
 
     for s in samples:
-        params = (s[0], s[1], s[2], s[3])
-        p = compute_log_pressure_from_eos(rho, create_spectral_eos(s))
-        logp.append(p)
+        logp.append(compute_log_pressure_from_eos(rho, create_spectral_eos(s)))
 
     logp = np.array(logp)
     logp_CIup =  np.quantile(logp, 0.95, axis=0)

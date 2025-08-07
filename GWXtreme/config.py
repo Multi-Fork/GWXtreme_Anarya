@@ -1,76 +1,111 @@
 import pathlib
 
 
-GW170817_POSTERIOR_ULTS_PRIOR = "/home/michael/projects/eos/GWXtreme_Tasks/year2/bilby_runs/simulations/outdir/real/uniformP_LTs/GW170817/simplified_result.json"
-GW170817_POSTERIOR_ULS_PRIOR = "/home/michael/projects/eos/GWXtreme_Tasks/year3/GW170817_prior_L1L2/CIT_attempt_successful/outdir/simplified_result.json"
-GW170817_POSTERIOR_ULS_PHENOM_PRIOR = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/BNS/GW170817phenom.json"
-
-GW230529_PHENOM_POSTERIOR = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/NSBH/gw230529_phenom_lowSpin.json"
-
 LAL_NESTED_SAMPLING_TAYLORF2_EVIDENCES_FILE = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/BNS/TaylorF2_eos_prior_broad_evidences.json"
 LAL_NESTED_SAMPLING_PHENOM_EVIDENCES_FILE = "/home/michael/projects/eos/GWXtreme_Tasks/year3/lastStretch/files/BNS/IMRphenom_eos_prior_broad_evidences.json"
 
 EOS_LIST = ["APR4_EPP","HQC18","SKOP","MPA1","SKI4","SKI6","SKMP","SK272","SK255","RS","SKI3","SKI2","SKI5","H4","MS1B_PP","MS1_PP"]
 
 SUPPORTED_EVENTS = ['GW170817', 'GW190425', 'GW230529']
-SUPPORTED_WAVEFORMS = ['TaylorF2', 'IMRPhenomD_NRTidalv2']
+SUPPORTED_WAVEFORMS = ['TaylorF2', 'PhenomNRT']
 
 PROJECT_DIR = pathlib.Path(__file__).parent.parent
 
 GW_PE_POSTERIOR_FILES = {
     'GW170817': {
-        '2D': fr"{PROJECT_DIR}/GW_event_PE_samples/GW170817/posterior_samples/GW170817_posterior_samples_broad_spin_prior.dat",
-        '3D': ""
+        '2D': fr"{PROJECT_DIR}/pe_samples/GW170817/posterior_samples/GW170817_posterior_samples_broad_spin_prior.dat",
+        '3D': fr"{PROJECT_DIR}/pe_samples/GW170817/posterior_samples/GW170817phenom.json"
     },
     'GW190425': {
-        '2D': fr"{PROJECT_DIR}/GW_event_PE_samples/GW190425/posterior_samples/GW190425_posterior_samples_broad_spin_prior.dat",
+        '2D': fr"{PROJECT_DIR}/pe_samples/GW190425/posterior_samples/GW190425_posterior_samples_broad_spin_prior.dat",
         '3D': ""
     },
-    'GW230529': {
-        '3D': fr"{PROJECT_DIR}/GW_event_PE_samples/GW230529/posterior_samples/GW230529_posterior_samples_phenom_lowspin.json"
+    'GW230529': { # same file for both
+        '2D': fr"{PROJECT_DIR}/pe_samples/GW230529/posterior_samples/GW230529_posterior_samples_phenom_lowspin.json",
+        '3D': fr"{PROJECT_DIR}/pe_samples/GW230529/posterior_samples/GW230529_posterior_samples_phenom_lowspin.json"
     }
 }
 
 GWXTREME_FLOW_FILES = {
     'GW170817': {
         '2D': {
-            'native': fr"{PROJECT_DIR}/trained_density_estimators/GW170817/2D/zuko_prebuilt_maf/native/GW170817_2D_flow.pkl",
-            'ensemble': fr"{PROJECT_DIR}/trained_density_estimators/GW170817/2D/zuko_prebuilt_maf/ensemble"
+            'whitened': {
+                'native': fr"{PROJECT_DIR}/density_estimators/GW170817/2D/zuko_prebuilt_maf_whitened/native/GW170817_2D_flow.pkl",
+                'ensemble': ""
+            },
+            'transformed': {
+                'native': fr"{PROJECT_DIR}/density_estimators/GW170817/2D/zuko_prebuilt_maf_transformed/native/GW170817_2D_flow.pkl",
+                'ensemble': fr"{PROJECT_DIR}/density_estimators/GW170817/2D/zuko_prebuilt_maf_transformed/ensemble"
+            }
         },
         '3D': {
-            'native': "",
-            'ensemble': ""
+            'whitened': {
+                'native': "",
+                'ensemble': ""
+            },
+            'transformed': {
+                'native': fr"{PROJECT_DIR}/density_estimators/GW170817/3D/zuko_prebuilt_maf_transformed/native/GW170817_3D_flow.pkl",
+                'ensemble': fr"{PROJECT_DIR}/density_estimators/GW170817/3D/zuko_prebuilt_maf_transformed/ensemble"
+            }
         }
     },
     'GW190425': {
         '2D': {
-            'native': fr"{PROJECT_DIR}/trained_density_estimators/GW190425/2D/zuko_prebuilt_maf/native/GW190425_2D_flow.pkl",
-            'ensemble': fr"{PROJECT_DIR}/trained_density_estimators/GW190425/2D/zuko_prebuilt_maf/ensemble"
+            'whitened': {
+                'native': "",
+                'ensemble': ""
+            },
+            'transformed': {
+                'native': fr"{PROJECT_DIR}/density_estimators/GW190425/2D/zuko_prebuilt_maf_transformed/native/GW190425_2D_flow.pkl",
+                'ensemble': fr"{PROJECT_DIR}/density_estimators/GW190425/2D/zuko_prebuilt_maf_transformed/ensemble"
+            }
         },
         '3D': {
-            'native': "",
-            'ensemble': ""
+            'whitened': {
+                'native': "",
+                'ensemble': ""
+            },
+            'transformed': {
+                'native': "",
+                'ensemble': ""
+            }
         }
     },
     'GW230529': {
+        '2D': {
+            'whitened': {
+                'native': "",
+                'ensemble': ""
+            },
+            'transformed': {
+                'native': fr"{PROJECT_DIR}/density_estimators/GW230529/2D/zuko_prebuilt_maf_transformed/native/GW230529_2D_flow.pkl",
+                'ensemble': fr"{PROJECT_DIR}/density_estimators/GW230529/2D/zuko_prebuilt_maf_transformed/ensemble"
+            }
+        },
         '3D': {
-            'native': fr"{PROJECT_DIR}/trained_density_estimators/GW230529/3D/zuko_prebuilt_maf/native/GW230529_3D_flow.pkl",
-            'ensemble': fr"{PROJECT_DIR}/trained_density_estimators/GW230529/3D/zuko_prebuilt_maf/ensemble"
+            'whitened': {
+                'native': fr"{PROJECT_DIR}/density_estimators/GW230529/3D/zuko_prebuilt_maf_whitened/native/GW230529_3D_flow.pkl",
+                'ensemble': ""
+            },
+            'transformed': {
+                'native': fr"{PROJECT_DIR}/density_estimators/GW230529/3D/zuko_prebuilt_maf_transformed/native/GW230529_3D_flow.pkl",
+                'ensemble': fr"{PROJECT_DIR}/density_estimators/GW230529/3D/zuko_prebuilt_maf_transformed/ensemble"
+            }
         }
     },
 }
 
 GWXTREME_KDE_GRID_FILES = {
     'GW170817': {
-        '2D': fr"{PROJECT_DIR}/trained_density_estimators/GW170817/2D/GW170817_2D_kde_probability_grid_250K.pt",
+        '2D': "",
         '3D': ""
     },
     'GW190425': {
-        '2D': fr"{PROJECT_DIR}/trained_density_estimators/GW170817/2D/GW170817_2D_kde_probability_grid_250K.pt",
+        '2D': "",
         '3D': ""
     },
     'GW230529': {
-        '3D': fr"{PROJECT_DIR}/trained_density_estimators/GW170817/2D/GW170817_2D_kde_probability_grid_250K.pt",
-    },
-    
+        '2D': "",
+        '3D': ""
+    }, 
 }

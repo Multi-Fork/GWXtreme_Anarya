@@ -25,8 +25,7 @@ def get_lambdat(m1, m2, Lambda1, Lambda2):
     to Lambda tilde.
     '''
     LambdaTilde = (2**5)/(26*(m1 + m2)**5)
-    LambdaTilde *= (m1**5 + 12*m2*m1**4)*Lambda1 + \
-                   (m2**5 + 12*m1*m2**4)*Lambda2
+    LambdaTilde *= (m1**5 + 12*m2*m1**4)*Lambda1 + (m2**5 + 12*m1*m2**4)*Lambda2
     return LambdaTilde
 
 
@@ -53,7 +52,7 @@ def get_lambdat_for_eos(m1, m2, max_mass_eos, eosfunc):
     return LambdaT
 
 
-def get_lambda_for_eos(m,max_mass_eos, eosfunc):
+def get_lambda_for_eos(m, max_mass_eos, eosfunc):
     '''
     This function accepts the mass and an equation of state interpolant
     with its maximum allowed mass, and return the values of Lambda.
@@ -118,22 +117,54 @@ def get_eos_interpolant(EoS: str, m_min: float = 1.0, N_points: int = 100):
 
     masses = np.linspace(m_min, max_mass, N_points)
     masses = masses[masses <= max_mass]
-    Lambdas = []
-    grav_masses = []
-    for m in masses:
-        try:
-            rr = lalsim.SimNeutronStarRadius(m*lal.MSUN_SI, fam)
-            kk = lalsim.SimNeutronStarLoveNumberK2(m*lal.MSUN_SI, fam)
-            cc = m*lal.MRSUN_SI/rr
-            Lambdas.append((2/3)*kk / (cc**5))
-            grav_masses.append(m)
-        except RuntimeError:
-            break
-    Lambdas = np.array(Lambdas)
-    grav_masses = np.array(grav_masses)
-    s = scipy.interpolate.interp1d(grav_masses, Lambdas)
+    
+    grav_masses, Lambdas = get_eos_lambdas_from_masses(masses, fam)
 
-    return [s, grav_masses, Lambdas, max_mass]
+    s = scipy.interpolate.interp1d(grav_masses, Lambdas)
+    return s, grav_masses, Lambdas, max_mass
+
+
+def get_eos_interpolant_from_parameters(
+        params, 
+        parameterization: Literal['spectral', 'polytrope'],
+        N_points: int = 100,
+        m_min: float = 0.8
+    ):
+    '''
+    This method accepts a four parameter description of the neutron star 
+    equation of state, and returns a list [s, masses, max_mass, min_mass] where s is 
+    the interpolation function for the mass and the tidal deformability.
+
+    params      :: Four parameter list.
+
+    N           :: Number of points that will be used for the
+                    construction of the interpolant.
+    '''
+
+    if parameterization == 'polytrope':
+        # params are log_p1_SI, g1, g2, g3
+        eos = lalsim.SimNeutronStarEOS4ParameterPiecewisePolytrope(*params)
+    
+    elif parameterization == 'spectral':
+        # params are g0, g1, g2, g3
+        eos = lalsim.SimNeutronStarEOS4ParameterSpectralDecomposition(*params)
+
+    fam = lalsim.CreateSimNeutronStarFamily(eos)
+    m_max = lalsim.SimNeutronStarMaximumMass(fam)/lal.MSUN_SI
+    
+    # This is necessary so that interpolant is computed over the full range
+    # Keeping number upto 3 decimal places
+    # Not rounding up, since that will lead to RuntimeError
+    max_mass = int(m_max*1000    ) / 1000
+    min_mass = int(m_min*1000 + 1) / 1000
+    masses = np.linspace(max(m_min, min_mass), max_mass, N_points)
+    masses = masses[masses <= max_mass]
+    
+    grav_masses, lambdas = get_eos_lambdas_from_masses(masses, fam)
+    
+    s = scipy.interpolate.interp1d(x=grav_masses, y=lambdas)
+    
+    return s, grav_masses, max_mass, max(m_min, min_mass)
 
 
 def get_eos_interpolant_from_mass_tidal_file(mass_tidal_file):
@@ -191,64 +222,24 @@ def get_eos_interpolant_from_mass_radius_file(MRFile):
     return [s, masses, Lambdas, max_mass]
 
 
-def get_eos_interpolant_from_parameters(
-        params, 
-        parameterization: Literal['spectral', 'polytrope'],
-        N_points: int = 100,
-        m_min: float = 0.8
-    ):
-    '''
-    This method accepts a four parameter description of the neutron star 
-    equation of state, and returns a list [s, m_min, max_mass] where s is 
-    the interpolation function for the mass and the tidal deformability.
-
-    params      :: Four parameter list.
-
-    N           :: Number of points that will be used for the
-                    construction of the interpolant.
-    '''
-
-    if parameterization == 'polytrope':
-        log_p1_SI, g1, g2, g3 = params
-        eos = lalsim.SimNeutronStarEOS4ParameterPiecewisePolytrope(log_p1_SI, g1, g2, g3)
-    
-    elif parameterization == 'spectral':
-        g0, g1, g2, g3 = params
-        eos = lalsim.SimNeutronStarEOS4ParameterSpectralDecomposition(g0, g1, g2, g3)
-
-    fam = lalsim.CreateSimNeutronStarFamily(eos)
-    m_max = lalsim.SimNeutronStarMaximumMass(fam)/lal.MSUN_SI
-    
-    # This is necessary so that interpolant is computed over the full range
-    # Keeping number upto 3 decimal places
-    # Not rounding up, since that will lead to RuntimeError
-    max_mass = int(m_max*1000    ) / 1000
-    min_mass = int(m_min*1000 + 1) / 1000
-    masses = np.linspace(max(m_min, min_mass), max_mass, N_points)
-    masses = masses[masses <= max_mass]
-    
+def get_eos_lambdas_from_masses(masses: np.ndarray, eos_fam) -> tuple[np.ndarray, np.ndarray]:
     lambdas = []
     grav_masses = []
     for m in masses:
         try:
-            rr = lalsim.SimNeutronStarRadius(m*lal.MSUN_SI, fam)
-            kk = lalsim.SimNeutronStarLoveNumberK2(m*lal.MSUN_SI, fam)
+            rr = lalsim.SimNeutronStarRadius(m*lal.MSUN_SI, eos_fam)
+            kk = lalsim.SimNeutronStarLoveNumberK2(m*lal.MSUN_SI, eos_fam)
             cc = m*lal.MRSUN_SI/rr
-            lambdas = np.append(lambdas, (2/3)*kk/(cc**5))
-            grav_masses = np.append(grav_masses, m)
+            lambdas.append((2/3)*kk/(cc**5))
+            grav_masses.append(m)
         except RuntimeError:
             break
     
     lambdas = np.array(lambdas)
     grav_masses = np.array(grav_masses)
-    s = scipy.interpolate.interp1d(grav_masses, lambdas)
-    
-    return([s, grav_masses, max_mass, max(m_min, min_mass)])
+    return grav_masses, lambdas
 
-
-def _read_posterior_file(posterior_file: str, method):
-    assert method in ['2D', '3D']
-
+def _read_prior_or_posterior_file(posterior_file: str, method: Literal['2D', '3D']) -> dict:
     posterior_file_ = pathlib.Path(posterior_file)
     ext = posterior_file_.suffix
 
@@ -327,4 +318,12 @@ def _read_posterior_file(posterior_file: str, method):
             lambda1 = np.array(data['lambda_1'])
             lambda2 = np.array(data['lambda_2'])
     
-    return m1, m2, q, mc, lambda1, lambda2, lambdat
+    return {
+        'm1_source': m1,
+        'm2_source': m2,
+        'q': q,
+        'mc_source': mc,
+        'lambdat': lambdat,
+        'lambda1': lambda1,
+        'lambda2': lambda2
+    }

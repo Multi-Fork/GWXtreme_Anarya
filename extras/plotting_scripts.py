@@ -6,15 +6,14 @@ import numpy as np
 from scipy.interpolate import interp1d
 import corner
 import arviz as az
-import h5py
 
 import lalsimulation as lalsim
 import lal
 
-from ..GWXtreme.utils import get_lambda_for_eos
+from ..GWXtreme.utils import get_lambda_for_eos, _read_prior_or_posterior_file
 from ..GWXtreme.eos_prior import compute_log_pressure_from_eos
 from ..GWXtreme.eos_inference import ParameterizedEoSSampler
-from ..GWXtreme.config import EOS_LIST
+from ..GWXtreme.config import EOS_LIST, GW_PE_POSTERIOR_FILES
 
 
 def plot_bayes_factors_bar_chart(
@@ -117,66 +116,79 @@ def plot_bayes_factors_bar_chart(
     plt.savefig(save_file, bbox_inches="tight")
 
 
-def plot_BNS_parameter_corner(
-        posterior_file: str,
+def plot_pe_posterior_corner(
+        event: str,
+        method: str,
         save_file: str,
+        posterior_file: str | None = None,
         EoS: str = "APR4_EPP",
-):
-    with open(posterior_file) as f:
-        data = json.load(f)['posterior']['content']
+):  
+    if posterior_file is None:
+        posterior_file = GW_PE_POSTERIOR_FILES[event][method]
     
-    m1, m2, q, mc, Lambda1, Lambda2 = (
-        np.array(data['m1_source']),
-        np.array(data['m2_source']),
-        np.array(data['q']),
-        np.array(data['mc_source']),
-        np.array(data['lambda_1']),
-        np.array(data['lambda_2'])
-        )
+    data = _read_prior_or_posterior_file(posterior_file, method)
+
+    if method == '2D':
+        data = {'lambdat': data['lambdat'], 'q': data['q']}
+    else:
+        data = {'lambda1': data['lambda1'], 'q': data['q'], 'lambda2': data['lambda2']}
+    
+    # data = {k:v for k, v in data.items() if v is not None}
+    
+    # m1, m2, q, mc, Lambda1, Lambda2, Lambdat = (
+    #     np.array(data['m1_source']),
+    #     np.array(data['m2_source']),
+    #     np.array(data['q']),
+    #     np.array(data['mc_source']),
+    #     np.array(data['lambda_1']),
+    #     np.array(data['lambda_2']),
+    #     np.array(data['lambdat'])
+    # )
 
     # Obtain EoS curve
-    eos = lalsim.SimNeutronStarEOSByName(EoS)
-    fam = lalsim.CreateSimNeutronStarFamily(eos)
-    m_min = 0.8
-    max_mass = lalsim.SimNeutronStarMaximumMass(fam)/lal.MSUN_SI
+    # fam = lalsim.CreateSimNeutronStarFamily(lalsim.SimNeutronStarEOSByName(EoS))
+    # m_min = 0.8
+    # max_mass = lalsim.SimNeutronStarMaximumMass(fam) / lal.MSUN_SI
 
-    # This is necessary so that interpolant is computed over the full range
-    # Keeping number upto 3 decimal places
-    # Not rounding up, since that will lead to RuntimeError
-    max_mass = int(max_mass*1000)/1000
-    masses = np.linspace(m_min, max_mass, 1000)
-    masses = masses[masses <= max_mass]
-    Lambdas = []
-    gravMass = []
-    for m in masses:
-        try:
-            rr = lalsim.SimNeutronStarRadius(m*lal.MSUN_SI, fam)
-            kk = lalsim.SimNeutronStarLoveNumberK2(m*lal.MSUN_SI, fam)
-            cc = m*lal.MRSUN_SI/rr
-            Lambdas = np.append(Lambdas, (2/3)*kk/(cc**5))
-            gravMass = np.append(gravMass, m)
-        except RuntimeError:
-            break
-    Lambdas = np.array(Lambdas)
-    gravMass = np.array(gravMass)
-    eosfunc = interp1d(gravMass, Lambdas)
+    # # This is necessary so that interpolant is computed over the full range
+    # # Keeping number upto 3 decimal places
+    # # Not rounding up, since that will lead to RuntimeError
+    # max_mass = int(max_mass * 1000) / 1000
+    # masses = np.linspace(0.8, max_mass, 1000)
+    # masses = masses[masses <= max_mass]
+    # Lambdas = []
+    # gravMass = []
+    
+    # for m in masses:
+    #     try:
+    #         rr = lalsim.SimNeutronStarRadius(m*lal.MSUN_SI, fam)
+    #         kk = lalsim.SimNeutronStarLoveNumberK2(m*lal.MSUN_SI, fam)
+    #         cc = m*lal.MRSUN_SI/rr
+    #         Lambdas = np.append(Lambdas, (2/3)*kk/(cc**5))
+    #         gravMass = np.append(gravMass, m)
+    #     except RuntimeError:
+    #         break
+    
+    # Lambdas = np.array(Lambdas)
+    # gravMass = np.array(gravMass)
+    # eosfunc = interp1d(gravMass, Lambdas)
 
-    M1, M2 = np.linspace(min(m1),max(m1),1000), np.linspace(min(m2),max(m2),1000)
-    Q = M2/M1
-    MC = ((M1*M2)**(3/5)) / ((M1+M2)**(1./5.))
-    Lambda1, Lambda2 = get_lambda_for_eos(M1, max_mass, eosfunc), get_lambda_for_eos(M2, max_mass, eosfunc)
+    # M1, M2 = np.linspace(min(m1), max(m1), 1000), np.linspace(min(m2), max(m2), 1000)
+    # Q = M2 / M1
+    # MC = ((M1 * M2)**(3/5)) / ((M1 + M2)**(1./5.))
+    # Lambda1, Lambda2 = get_lambda_for_eos(M1, max_mass, eosfunc), get_lambda_for_eos(M2, max_mass, eosfunc)
 
-    # Format curve values
-    EoS_values = np.array([Lambda1,Lambda2,M1,M2,MC,Q])
+    # # Format curve values
+    # EoS_values = np.array([Lambda1, Lambda2, M1, M2, MC, Q])
 
     # Construct corner & and overlay appropriate curves
     figure = corner.corner(az.from_dict(data))
-    ndim = 6
-    axes = np.array(figure.axes).reshape((ndim, ndim))
-    for yi in range(ndim):
-        for xi in range(yi):
-            ax = axes[yi, xi]
-            ax.plot(EoS_values[xi], EoS_values[yi], color="red")
+    # ndim = 6
+    # axes = np.array(figure.axes).reshape((ndim, ndim))
+    # for yi in range(ndim):
+    #     for xi in range(yi):
+    #         ax = axes[yi, xi]
+            #ax.plot(EoS_values[xi], EoS_values[yi], color="red")
 
     plt.savefig(save_file)
 
@@ -322,3 +334,13 @@ def plot_max_masses_from_spectral_EoS_parameters(
     plt.yticks([])
     plt.legend()
     plt.savefig(save_file, bbox_inches='tight')
+
+
+if __name__ == "__main__":
+    plot_pe_posterior_corner('GW170817', '2D', save_file='./170817_2D_corner.png')
+    plot_pe_posterior_corner('GW170817', '3D', save_file='./170817_3D_corner.png')
+    
+    plot_pe_posterior_corner('GW190425', '2D', save_file='./190425_2D_corner.png')
+
+    plot_pe_posterior_corner('GW230529', '2D', save_file='./230529_2D_corner.png')
+    plot_pe_posterior_corner('GW230529', '3D', save_file='./230529_3D_corner.png')

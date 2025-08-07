@@ -19,7 +19,6 @@ import os
 import json
 import multiprocessing
 from typing import Literal
-import pathlib
 
 import numpy as np
 import torch
@@ -33,13 +32,12 @@ from .utils import (
     get_eos_interpolant_from_mass_tidal_file,
     get_eos_interpolant_from_parameters,
     get_masses,
-    get_lambdat,
     get_lambda_for_eos,
     get_lambdat_for_eos,
     apply_mass_constraint,
-    _read_posterior_file
+    _read_prior_or_posterior_file
 )
-from .density_estimation import NormalizingFlow, TransformKDE, ReflectKDE
+from .density_estimation import NormalizingFlow, ReflectiveNormalizingFlow, BoundedKDE
 from .config import SUPPORTED_EVENTS, GW_PE_POSTERIOR_FILES
 
 
@@ -49,8 +47,11 @@ class ModelSelector:
             event: str,
             prior_file: str | None = None,
             method: Literal['2D', '3D'] = '2D',
-            density_est_method: Literal['kde', 'flow', 'reflectkde'] = 'flow',
-            parameterization: Literal['spectral', 'polytrope'] = 'spectral'
+            density_est_method: Literal['kde', 'flow', 'reflectflow'] = 'flow',
+            parameterization: Literal['spectral', 'polytrope'] = 'spectral',
+            min_mass: float | None = None,
+            min_q: float | None = None,
+            max_q: float | None = None
         ):
         '''
         Initiates the Bayes factor calculator with the posterior
@@ -65,7 +66,7 @@ class ModelSelector:
                          to determine the bounds.
         '''
         assert method in ['2D', '3D']
-        assert density_est_method in ['kde', 'flow', 'reflectkde']
+        assert density_est_method in ['kde', 'flow', 'reflectflow']
         assert parameterization in ['spectral', 'polytrope']
         assert event in SUPPORTED_EVENTS, f'event must be one of {SUPPORTED_EVENTS}'
         
@@ -75,58 +76,28 @@ class ModelSelector:
         self.event = event
         
         posterior_file = GW_PE_POSTERIOR_FILES[event][method]
-        m1, m2, q, mc, lambda1, lambda2, lambdat = _read_posterior_file(posterior_file, method)
-        data = {
-            'm1_source': m1,
-            'm2_source': m2,
-            'q': q,
-            'mc_source': mc,
-            'lambdat': lambdat,
-            'lambda1': lambda1,
-            'lambda2': lambda2
-        }
+        data = _read_prior_or_posterior_file(posterior_file, method)
         self.data = {k:v for k, v in data.items() if v is not None}
         
+        # If a prior file is given, use that (expecting it to contain the same as what's in the posterior file for the event/method), and if not,
+        # try to use specifically passed values for min_mass, max_mass, min_q, and max_q. If those are not passed, take them from the posterior samples.
         if prior_file is not None:
-            self.prior = np.genfromtxt(prior_file, names=True)
-            self.min_mass = np.min(self.prior['m2_source'])
-            self.max_mass = np.max(self.prior['m1_source'])
-            self.q_max = np.max(self.prior['q'])
-            self.q_min = np.min(self.prior['q'])
+            prior = _read_prior_or_posterior_file(prior_file, method)
+        
+            self.min_mass = np.min(prior['m2_source'])
+            self.q_max = np.max(prior['q'])
+            self.q_min = np.min(prior['q'])
         else:
-            self.prior = None
-            self.min_mass = np.min(self.data['m2_source'])  # min posterior mass
-            self.max_mass = np.max(self.data['m1_source'])  # max posterior mass
-            self.q_max = np.max(self.data['q'])
-            self.q_min = np.min(self.data['q'])
-        
-        self.m_min = 0.8
-        
-        if self.method == '2D':
-            self.marginal_posterior = np.stack(
-                (
-                    self.data['lambdat'],
-                    self.data['q']
-                ),
-                axis=-1
-            )
-                
-        elif self.method == '3D':
-            self.marginal_posterior = np.stack(
-                (
-                    self.data['lambda1'],
-                    self.data['q'],
-                    self.data['lambda2']
-                ),
-                axis=-1
-            )
-        
+            self.min_mass = min_mass if min_mass else np.min(self.data['m2_source'])
+            self.q_min = min_q if min_q else np.min(self.data['q'])
+            self.q_max = max_q if max_q else np.max(self.data['q'])
+
         if density_est_method == "flow":
             self.density_estimator = NormalizingFlow(event=event, method=method)
         elif density_est_method == "kde":
-            self.density_estimator = TransformKDE(event, method)
-        elif density_est_method == "reflectkde":
-            self.density_estimator = ReflectKDE(event, method)
+            self.density_estimator = BoundedKDE(event, method)
+        elif density_est_method == 'reflectflow':
+            self.density_estimator = ReflectiveNormalizingFlow(event, method)
 
     def compute_eos_evidence_ratio(
             self,
@@ -179,7 +150,7 @@ class ModelSelector:
         assert [s2, max_mass_eos2] != [np.nan, np.nan], "The system being studied is a binary black hole system."
 
         if type(EoS1) is list:
-            [s1, _, max_mass_eos1,min_mass1] = get_eos_interpolant_from_parameters(EoS1, N=1000)
+            [s1, _, max_mass_eos1, min_mass1] = get_eos_interpolant_from_parameters(EoS1, N=1000)
 
         elif os.path.exists(EoS1):
             if verbose: print('Trying m-R-k file to compute EoS interpolant')
@@ -248,7 +219,6 @@ class ModelSelector:
             params,
             parameterization=self.parameterization, #type: ignore
             N_points=100,
-            m_min=self.m_min
         )
 
         # compute support
@@ -274,7 +244,7 @@ class ModelSelector:
         This function numerically integrates the KDE along the
         EoS curve.
 
-        eos_interpolant	 :: interpolation function of Λ = eos_interpolant(m)
+        eos_interpolant	:: interpolation function of Λ = eos_interpolant(m)
 
         max_mass_eos :: Maximum mass allowed by the EoS.
 
@@ -300,33 +270,43 @@ class ModelSelector:
             points = np.stack((lambdat, q), axis=-1)
         else:
             lambda1, lambda2 = get_lambda_for_eos(m1, max_mass_eos, eos_interpolant), get_lambda_for_eos(m2, max_mass_eos, eos_interpolant)
-            lambdat = get_lambdat(m1, m2, lambda1, lambda2)
             points = np.stack((lambda1, q, lambda2), axis=-1)
 
         points = torch.tensor(points, dtype=torch.float32)
 
-        evidences = np.array([])
+        #####################################################
+        # import matplotlib.pyplot as plt
+        # fig, ax = plt.subplots(1, 3)
+        # ax[0].scatter(lambda1, q)
+        # ax[0].set_xlabel('lambda1')
+        # ax[0].set_ylabel('q')
+        # ax[1].scatter(lambda2, q)
+        # ax[1].set_xlabel('lambda2')
+        # ax[1].set_ylabel('q')
+        # ax[2].scatter(lambda1, lambda2)
+        # ax[2].set_xlabel('lambda1')
+        # ax[2].set_ylabel('lambda2')
+
+        # plt.savefig(f"./testing.png")
+        #####################################################
 
         # perform integration via trapezoidal approximation
+        prob_density = self.density_estimator.pdf(points).numpy()
+        evidence = np.trapezoid(prob_density, q)
+        
         # use normalizing flow(s)
-        if isinstance(self.density_estimator, NormalizingFlow):
-            prob_density = self.density_estimator.pdf(points).numpy()
-            evidence = np.trapezoid(prob_density, q)
-            
-            if do_ensemble:
-                ensemble_prob_density = self.density_estimator.ensemble_pdf(points).numpy()
-                evidences = np.trapezoid(ensemble_prob_density, q, axis=1)
+        if do_ensemble and isinstance(self.density_estimator, NormalizingFlow):
+            ensemble_prob_density = self.density_estimator.ensemble_pdf(points).numpy()
+            evidences = np.array(np.trapezoid(ensemble_prob_density, q, axis=1))
                 
-        # use KDE (bounded using transformation or reflection)
+        # use KDE
+        elif N_kde_trials > 0 and (isinstance(self.density_estimator, TransformKDE) or isinstance(self.density_estimator, ReflectKDE)):
+            evidences = np.empty(N_kde_trials)
+            for i in range(N_kde_trials):
+                resampled_prob_density = self.density_estimator.pdf(points, resample=True).numpy()
+                evidences[i] = np.trapezoid(resampled_prob_density, q)
         else:
-            prob_density = self.density_estimator.pdf(points).numpy()
-            evidence = np.trapezoid(prob_density, q)
-
-            if N_kde_trials > 0:
-                evidences = np.empty(N_kde_trials)
-                for i in range(N_kde_trials):
-                    resampled_prob_density = self.density_estimator.pdf(points, resample=True).numpy()
-                    evidences[i] = np.trapezoid(resampled_prob_density, q)
+            evidences = np.array([])
 
         return evidence, evidences
 
@@ -705,19 +685,17 @@ class ParameterizedEoSSampler:
 
 if __name__ == "__main__":
     ems = ModelSelector(
-        event='GW170817'
+        event='GW170817',
+        method='2D',
+        density_est_method='reflectflow',
+        # min_q=0.2,
+        # max_q=0.5,
+        # min_mass=0.9,
+        # max_mass=5.0
     )
 
-    bf = ems.compute_eos_evidence_ratio('APR4_EPP', 'SLY')
-    print(bf)
-
-    sp = (6.768730840689067829e-01, 1.849793950121006447e-01, -1.545969552248221621e-02, -9.786142132722361537e-05)
-    evi = ems.compute_parameterized_eos_evidence(sp)
-    print(evi)
-
-    jms = JointModelSelector(
-        events=["GW170817", "GW190425"]
-    )
-
-    joint_bf = jms.compute_joint_eos_evidence_ratio('APR4_EPP', 'SLY', verbose=True)
-    print(joint_bf)
+    from .config import EOS_LIST
+    from time import sleep
+    for eos in EOS_LIST:
+        bf = ems.compute_eos_evidence_ratio(eos, 'SLY', N_grid=1000)
+        print(eos, bf)

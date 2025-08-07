@@ -67,12 +67,8 @@ def create_spectral_eos(eos_parameters: tuple) -> typing.Any:
                         describing the eos.
     
     '''
-    
-    gamma1, gamma2, gamma3, gamma4 = eos_parameters
-    eos = lalsimulation.SimNeutronStarEOS4ParameterSpectralDecomposition(
-        gamma1, gamma2, gamma3, gamma4,
-    )
-    return eos
+    # params are gamma1, gamma2, gamma3, gamma4
+    return lalsimulation.SimNeutronStarEOS4ParameterSpectralDecomposition(*eos_parameters)
 
 
 def create_polytrope_eos(eos_parameters: tuple) -> typing.Any:
@@ -87,12 +83,8 @@ def create_polytrope_eos(eos_parameters: tuple) -> typing.Any:
                         the eos.
     
     '''
-
-    logP1, gamma1, gamma2, gamma3 = eos_parameters
-
-    return lalsimulation.SimNeutronStarEOS4ParameterPiecewisePolytrope(
-        logP1, gamma1, gamma2, gamma3,
-    )
+    # params are logP1, gamma1, gamma2, gamma3
+    return lalsimulation.SimNeutronStarEOS4ParameterPiecewisePolytrope(*eos_parameters)
 
 
 def spectral_eos_adiabatic_index(x, spectral_parameters):
@@ -108,19 +100,12 @@ def spectral_eos_adiabatic_index(x, spectral_parameters):
                             parameters describing the eos
     
     '''
-
     x_sq = x * x
     x_cu = x_sq * x
 
     gamma1, gamma2, gamma3, gamma4 = spectral_parameters
 
-    log_gamma = (
-        gamma1 +
-        gamma2 * x +
-        gamma3 * x_sq +
-        gamma4 * x_cu
-    )
-
+    log_gamma = gamma1 + gamma2 * x + gamma3 * x_sq + gamma4 * x_cu
     return np.exp(log_gamma)
 
 
@@ -132,10 +117,9 @@ def is_valid_adiabatic_index(spectral_parameters: tuple):
     spectral_parameters :: (gamma1,gamma2,gamma3,gamma4), spectral 
                             parameters describing the eos.
     '''
-    
     x_grid = np.linspace(0., 12.3081, 500)
     adiabatic_index = spectral_eos_adiabatic_index(x_grid, spectral_parameters)
-    return (adiabatic_index > 0.6).all() and (adiabatic_index < 4.5).all()
+    return np.all(adiabatic_index > 0.6) and np.all(adiabatic_index < 4.5)
 
 
 def has_enough_points(eos: typing.Any) -> bool:
@@ -148,7 +132,6 @@ def has_enough_points(eos: typing.Any) -> bool:
     eos  ::   A lalsimulation.SimNeutronStarEOS* object.
     
     '''
-
     min_points = 8
 
     logpmin = 75.5
@@ -157,15 +140,11 @@ def has_enough_points(eos: typing.Any) -> bool:
     dlogp = (logpmax - logpmin) / 100
 
     m_prev = 0.0
-
     for i in range(min_points):
         p = np.exp(logpmin + i*dlogp)
-
         r, m, k = lalsimulation.SimNeutronStarTOVODEIntegrate(p, eos)
 
-        if m <= m_prev:
-            return False
-
+        if m <= m_prev: return False
         m_prev = m
 
     return True
@@ -180,7 +159,6 @@ def eos_max_sound_speed(eos: typing.Any, eos_fam: typing.Any) -> float:
     eos_fam      ::     A lalsimulation.CreateSimNeutronStarFamily object.
     
     '''
-
     # Maximum allowed mass
     m_max_kg = lalsimulation.SimNeutronStarMaximumMass(eos_fam)
     # Central pressure
@@ -202,7 +180,6 @@ def is_causal_eos(eos: typing.Any, eos_fam: typing.Any) -> bool:
     eos_fam      ::     A lalsimulation.CreateSimNeutronStarFamily object.
     
     '''
-    
     c_max = eos_max_sound_speed(eos, eos_fam)
 
     # Confirm that the sound speed is less than speed of light, with an added

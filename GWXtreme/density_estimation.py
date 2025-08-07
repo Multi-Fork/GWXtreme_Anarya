@@ -5,7 +5,6 @@ import multiprocessing
 
 import numpy as np
 import torch
-import pandas as pd
 import scipy.stats
 
 import matplotlib.colors
@@ -14,7 +13,7 @@ import matplotlib.collections
 import matplotlib.pyplot as plt
 
 from .config import SUPPORTED_EVENTS, GW_PE_POSTERIOR_FILES, GWXTREME_FLOW_FILES, GWXTREME_KDE_GRID_FILES
-from .utils import _read_posterior_file
+from .utils import _read_prior_or_posterior_file
 
 
 def learn_flow(
@@ -23,15 +22,11 @@ def learn_flow(
     optimizer,
     N_epochs: int,
     batch_size: int,
-    save_file: str
-):  
+    save_file: str,
+    stop_early_if_no_improvement_in_n_epochs: int = 0, 
+) -> list:  
     assert pathlib.Path(save_file).parent.exists(), "directory for given save_file doesn't exist"
-    training_summary = f" \
-        data.shape: {data.shape}\n \
-        flow: {flow}\n \
-        optimizer: {optimizer}\n \
-        N_epochs: {N_epochs}\n \
-        batch_size: {batch_size}\n"            
+    training_summary = f"data.shape: {data.shape}\nflow: {flow}\noptimizer: {optimizer}\nN_epochs: {N_epochs}\nbatch_size: {batch_size}\n"            
 
     train_loader = torch.utils.data.DataLoader(
         dataset=torch.utils.data.TensorDataset(data),
@@ -40,15 +35,18 @@ def learn_flow(
     )
 
     start = time.perf_counter()
+    epoch_mean_losses = []
+    minimum_epoch_mean_loss = torch.inf
+    best_epoch = 0
     for epoch in range(N_epochs + 1):
         losses = []
 
         for d in train_loader:
             # minimize expected KL divergence
             loss = -flow().log_prob(torch.stack(d)).mean() # -log p(x)
-            if loss == torch.nan:
+            if not torch.isfinite(loss).item():
                 print(f'Aborting: loss = nan at epoch {epoch}.')
-                return
+                return epoch_mean_losses
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -56,21 +54,34 @@ def learn_flow(
             losses.append(loss.detach())
         
         losses = torch.stack(losses)
+        epoch_mean_loss = losses.mean().item()
+        epoch_mean_losses.append(epoch_mean_loss)
 
         if epoch % 10 == 0:
-            progress = f"[{epoch:6d} / {N_epochs}]\tavg. loss = {losses.mean().item():3.4f} +- {losses.std().item():3.4f}"
+            progress = f"[{epoch:6d} / {N_epochs}]\tavg. loss = {epoch_mean_loss:3.4f} +- {losses.std().item():3.4f}"
             training_summary += f"{progress}\n"
             print(f'{progress}')
+        
+        if stop_early_if_no_improvement_in_n_epochs > 0:
+            if epoch_mean_loss < minimum_epoch_mean_loss:
+                minimum_epoch_mean_loss = epoch_mean_loss
+                best_epoch = epoch
+            else:
+                if epoch - best_epoch >= stop_early_if_no_improvement_in_n_epochs:
+                    print(f'Stopping early - no improvement in loss after {stop_early_if_no_improvement_in_n_epochs} epochs.')
+                    break
     
     end = time.perf_counter()
     torch.save(flow, save_file)
 
-    training_summary += f"\ntrain time: {(end - start) / 60:.2f} minutes\n"
+    training_summary += f"\ntrain time: {(end - start) / 60:.2f} minutes"
     
     model_save_file = pathlib.Path(save_file)
     summary_save_file = model_save_file.parent.joinpath(model_save_file.stem + '_train_summary.txt')
     summary_save_file.touch(exist_ok=True)
     summary_save_file.write_text(training_summary)
+
+    return epoch_mean_losses
 
 
 def learn_ensemble(
@@ -125,11 +136,15 @@ def score_ensemble(event: str, method: str, ensemble_dir: str, save_file: str | 
     Z = _to_latent_space(X)
     ladj = _get_log_abs_det_jacobian(X)
 
-    kde = TransformKDE(event, method) # type: ignore
+    kde = ReflectKDE(event, method) # type: ignore
 
-    flow_ensemble = _read_ensemble_flows(ensemble_dir)
-    losses = []
-    for flow in flow_ensemble:
+    flow_ensemble = {}
+    for file in pathlib.Path(ensemble_dir).iterdir():
+        if file.suffix == '.pkl':
+            flow_ensemble[file.stem] = torch.load(file, weights_only=False)
+    
+    losses = {}
+    for fname, flow in flow_ensemble.items():
         flow_log_density = flow().log_prob(Z).detach() + ladj
         kde_log_density = kde.log_pdf(X)
         loss = torch.kl_div(
@@ -137,36 +152,38 @@ def score_ensemble(event: str, method: str, ensemble_dir: str, save_file: str | 
             kde_log_density,
             log_target=True
         ).mean().item()
-        losses.append(loss)
+        losses[fname] = loss
     
     if save_file is not None:
-        np.savetxt(
-            save_file,
-            np.stack((np.arange(len(losses)), losses), axis=-1),
-            fmt="flow #%4d      %1.4e"
-        )
+        with open(save_file, 'w') as f:
+            lines = [f'{fname}\t{loss}\n' for fname, loss in losses.items()]
+            f.writelines(lines)
     
     return losses
 
 
-def get_gw_event_pe_posterior_samples(event: str, method: str):
+def get_gw_event_pe_posterior_samples(event: str, method: Literal['2D', '3D']):
     posterior_file = GW_PE_POSTERIOR_FILES[event][method]
     
-    m1, m2, q, mc, lambda1, lambda2, lambdat = _read_posterior_file(posterior_file, method)
+    samples = _read_prior_or_posterior_file(posterior_file, method)
     
     if method == '2D':
-        return torch.tensor(lambdat, dtype=torch.float32), torch.tensor(q, dtype=torch.float32)
+        return torch.tensor(samples['lambdat'], dtype=torch.float32), torch.tensor(samples['q'], dtype=torch.float32)
     elif method == '3D':
-        return torch.tensor(lambda1, dtype=torch.float32), \
-            torch.tensor(q, dtype=torch.float32), \
-            torch.tensor(lambda2, dtype=torch.float32)
+        return torch.tensor(samples['lambda1'], dtype=torch.float32), \
+            torch.tensor(samples['q'], dtype=torch.float32), \
+            torch.tensor(samples['lambda2'], dtype=torch.float32)
     else:
         raise NotImplementedError()
 
 
-def get_gw_event_pe_posterior_normalizing_flows(event: str, method: str):
-    native_flow = torch.load(GWXTREME_FLOW_FILES[event][method]['native'], weights_only=False)
-    flow_ensemble = _read_ensemble_flows(GWXTREME_FLOW_FILES[event][method]['ensemble'])
+def get_gw_event_pe_posterior_normalizing_flows(event: str, method: str, transformed: bool = True):
+    if transformed:
+        native_flow = torch.load(GWXTREME_FLOW_FILES[event][method]['transformed']['native'], weights_only=False)
+        flow_ensemble = _read_ensemble_flows(GWXTREME_FLOW_FILES[event][method]['transformed']['ensemble'])
+    else:
+        native_flow = torch.load(GWXTREME_FLOW_FILES[event][method]['whitened']['native'], weights_only=False)
+        flow_ensemble = _read_ensemble_flows(GWXTREME_FLOW_FILES[event][method]['whitened']['ensemble'])
     return native_flow, flow_ensemble
 
 
@@ -257,90 +274,6 @@ def _get_log_abs_det_jacobian(x: torch.Tensor) -> torch.Tensor:
     return ladj
 
 
-class TransformKDE:
-    def __init__(
-            self,
-            event: str,
-            method: Literal['2D', '3D'] = '2D'
-    ):
-        assert method in ['2D', '3D'], "method must be one of ['2D', '3D']"
-        self.method = method
-        
-        assert event in SUPPORTED_EVENTS, f"event must be one of {SUPPORTED_EVENTS}."
-        self.event = event
-        self.posterior_samples = torch.stack(
-            get_gw_event_pe_posterior_samples(event, method),
-            dim=-1
-        )
-        post_latent = _to_latent_space(self.posterior_samples)
-        self.base_kde = scipy.stats.gaussian_kde(post_latent.T.numpy())
-
-    def sample(self, size: int) -> torch.Tensor:
-        z = torch.tensor(self.base_kde.resample(size).T, dtype=torch.float32)
-        x = _to_data_space(z)
-        return x
-
-    def log_pdf(self, x: torch.Tensor, resample: bool = False) -> torch.Tensor:
-        if resample:
-            Z = self.base_kde.resample()
-            kde = scipy.stats.gaussian_kde(Z)
-        else:
-            kde = self.base_kde
-        
-        z = _to_latent_space(x)
-        ladj = _get_log_abs_det_jacobian(x)
-        valid_i = ~torch.logical_or(torch.isnan(z[:, 0]), torch.isnan(z[:, 1]))
-        lp = torch.empty(z.shape[0])
-        lp[valid_i] = torch.log(torch.tensor(kde(z[valid_i].T.numpy()).T, dtype=torch.float32)) + ladj[valid_i]
-        lp[~valid_i] = -torch.inf
-        return lp
-
-    def pdf(self, x: torch.Tensor, resample: bool = False) -> torch.Tensor:
-        return torch.exp(self.log_pdf(x, resample=resample))
-
-    def compute_probability_over_grid(
-            self,
-            N_boxes: int,
-            save_file: str
-        ):
-        eps = 1e-5
-        if self.method == '2D':
-            z_grid = _to_latent_space(
-                torch.stack(
-                    torch.meshgrid(
-                        torch.linspace(eps, 5000, N_boxes),
-                        torch.linspace(eps, 1 - eps, N_boxes),
-                        indexing='xy'
-                    ),
-                    dim=-1
-                ).reshape((N_boxes**2, 2))
-            ).reshape((N_boxes, N_boxes, 2))
-            
-            z_box_probs = torch.zeros((N_boxes - 1, N_boxes - 1, 3))
-
-            for i in range(N_boxes - 1):
-                for j in range(N_boxes - 1):
-                    low = z_grid[i, j]
-                    high = z_grid[i + 1, j + 1]
-
-                    box_prob = self.base_kde.integrate_box(low, high)
-                    z_box_probs[i, j] = torch.hstack((low, torch.tensor(box_prob)))
-
-            x_box_probs = torch.stack(
-                (
-                    torch.exp(z_box_probs[:, :, 0]), 
-                    torch.sigmoid(z_box_probs[:, :, 1]), 
-                    z_box_probs[:, :, 2]
-                ), 
-                dim=-1
-            )
-        
-        else:
-            raise NotImplementedError()
-        
-        torch.save(x_box_probs, save_file)
-    
-
 class NormalizingFlow:
     def __init__(
             self,
@@ -385,8 +318,10 @@ class NormalizingFlow:
 
     def log_pdf(self, x: torch.Tensor) -> torch.Tensor:
         assert self.native_flow is not None, "No normalizing flow has been set."
+        # w = self._scale_down(x)
         z = _to_latent_space(x)
         ladj = _get_log_abs_det_jacobian(x)
+        # ladj += torch.log(self._scale_jacobian())
         lp = self.native_flow().log_prob(z).detach() + ladj
         lp = torch.nan_to_num(lp, nan=-torch.inf)
         return lp
@@ -526,9 +461,6 @@ class NormalizingFlow:
             l1_l2_p = torch.trapezoid(p, l1_arr, dim=0).T
             l2_q_p = torch.trapezoid(p, q_arr, dim=1)
 
-            print(p.shape)
-            print(l1_q_p.shape)
-
             qcs = ax[0].contourf(l1_arr, q_arr, l1_q_p, cmap='inferno', levels=30)
             plt.colorbar(qcs, ax=ax[0])
             ax[0].scatter(lambda1, q, s=0.1, c='gray', alpha=0.10)
@@ -552,7 +484,6 @@ class NormalizingFlow:
         else:
             plt.show()
 
-    
     def plot_error(self, save_file: str | None = None):
         assert self.method == '2D', 'can not plot 3D distribution'
         N_boxes = len(self.kde_prob_grid)
@@ -597,7 +528,165 @@ class NormalizingFlow:
             plt.show()
 
 
-class ReflectKDE:
+class ReflectiveNormalizingFlow:
+    def __init__(
+            self,
+            event: str,
+            method: Literal['2D', '3D'],
+    ):   
+        assert method in ['2D', '3D'], "method must be one of ['2D', '3D']"
+        self.method = method
+
+        assert event in SUPPORTED_EVENTS, f"event must be one of {SUPPORTED_EVENTS}."
+        self.event = event
+
+        self.native_flow, self.flow_ensemble = get_gw_event_pe_posterior_normalizing_flows(event, method, transformed=False)
+        self.posterior_samples = torch.stack(
+            get_gw_event_pe_posterior_samples(event, method),
+            dim=-1
+        )
+
+        if method == '2D':
+            self.low = torch.tensor([0., 0.], dtype=torch.float32)
+            self.high = torch.tensor([torch.inf, 1.], dtype=torch.float32)
+        
+        elif method == '3D':
+            self.low = torch.tensor([0., 0., 0.], dtype=torch.float32)
+            self.high = torch.tensor([torch.inf, 1., torch.inf], dtype=torch.float32)
+    
+    def pdf(self, x: torch.Tensor) -> torch.Tensor:
+        """Return an estimate of the density evaluated at the given points."""
+        w = self._scale_down(x)
+        p = torch.exp(self.native_flow().log_prob(w).detach())
+        
+        for i, (low, high) in enumerate(zip(self.low, self.high)):                
+            if torch.isfinite(low):
+                reflect_w = w.clone()
+                reflect_w[:, i] = 2.0 * low - w[:, i]
+
+                p += torch.exp(self.native_flow().log_prob(reflect_w).detach())
+
+            if torch.isfinite(high):
+                reflect_w = w.clone()
+                reflect_w[:, i] = 2.0 * high - w[:, i]
+
+                p += torch.exp(self.native_flow().log_prob(reflect_w).detach())
+
+        # jacobian of transformation to whitened space
+        p *= self._scale_jacobian()
+
+        return p
+
+    def log_pdf(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.log(self.pdf(x))
+    
+    def plot_density(self, N_grid: int = 200, save_file: str | None = None):
+        if self.method == '2D':        
+            lambdat, q = get_gw_event_pe_posterior_samples(self.event, self.method) # type: ignore
+
+            fig, ax = plt.subplots(figsize=(7, 7))
+            lt_grid, q_grid = torch.meshgrid([torch.linspace(0., lambdat.max(), N_grid), torch.linspace(0.0, 1.0, N_grid)])
+            points = torch.stack([lt_grid, q_grid], dim=-1).reshape((N_grid**2, 2))
+            lp = self.log_pdf(points).reshape((N_grid, N_grid)).detach()
+            p = torch.exp(lp)
+
+            qcs = ax.contourf(lt_grid, q_grid, p, cmap='inferno')
+            plt.colorbar(qcs, ax=ax)
+            ax.scatter(x=lambdat, y=q, s=0.25, c='gray', alpha=0.40)
+            ax.set_title(self.event)
+            ax.set_xlabel(r'$\tilde{\Lambda}$', fontsize=14)
+            ax.set_ylabel(r'$q$', fontsize=14)
+
+        else:
+            lambda1, q, lambda2 = get_gw_event_pe_posterior_samples(self.event, self.method) # type: ignore
+
+            fig, ax = plt.subplots(1, 3, figsize=(18, 6), width_ratios=[0.20, 0.20, 0.20])
+
+            l1_arr = torch.linspace(0., lambda1.max(), N_grid)
+            q_arr = torch.linspace(0., 1.0, N_grid)
+            l2_arr = torch.linspace(0., lambda2.max(), N_grid)
+
+            l1_grid, q_grid, l2_grid = torch.meshgrid([l1_arr, q_arr, l2_arr], indexing='xy')
+            points = torch.stack([l1_grid, q_grid, l2_grid], dim=-1).reshape((N_grid**3, 3))
+
+            p = self.pdf(points).reshape((N_grid, N_grid, N_grid))
+
+            l1_q_p = torch.trapezoid(p, l2_arr, dim=2)
+            l1_l2_p = torch.trapezoid(p, l1_arr, dim=0).T
+            l2_q_p = torch.trapezoid(p, q_arr, dim=1)
+
+            qcs = ax[0].contourf(l1_arr, q_arr, l1_q_p, cmap='inferno', levels=30)
+            plt.colorbar(qcs, ax=ax[0])
+            ax[0].scatter(lambda1, q, s=0.1, c='gray', alpha=0.10)
+            ax[0].set_xlabel(r"$\Lambda_1$")
+            ax[0].set_ylabel(r"$q$")
+
+            qcs = ax[1].contourf(l2_arr, q_arr, l2_q_p, cmap='inferno', levels=30)
+            plt.colorbar(qcs, ax=ax[1])
+            ax[1].scatter(lambda2, q, s=0.2, c='gray', alpha=0.30)
+            ax[1].set_xlabel(r"$\Lambda_2$")
+            ax[1].set_ylabel(r"$q$")
+
+            qcs = ax[2].contourf(l1_arr, l2_arr, l1_l2_p, cmap='inferno', levels=30)
+            plt.colorbar(qcs, ax=ax[2])
+            ax[2].scatter(lambda1, lambda2, s=0.2, c='gray', alpha=0.30)
+            ax[2].set_xlabel(r"$\Lambda_1$")
+            ax[2].set_ylabel(r"$\Lambda_2$")
+
+        if save_file is not None:
+            fig.savefig(save_file, bbox_inches='tight', dpi='figure')
+        else:
+            plt.show()
+    
+    def _scale_down(self, x: torch.Tensor) -> torch.Tensor:
+        assert x.ndim == 2, 'x should be an (N, D) shaped Tensor'
+        assert x.shape[-1] in (2, 3), 'last dimension of x must be size 2 or 3'
+        
+        if x.shape[-1] == 2:
+            # bring LambdaT to original range
+            w = torch.stack((x[:, 0] / self.posterior_samples[:, 0].max(), x[:, 1]), dim=-1)
+        else:
+            # bring Lambda1 and Lambda2 to original range
+            w = torch.stack(
+                (
+                    x[:, 0] / self.posterior_samples[:, 0].max(), 
+                    x[:, 1], 
+                    x[:, 2] / self.posterior_samples[:, 2].max()
+                ),
+                dim=-1
+            )
+
+        return w
+    
+    def _scale_up(self, w: torch.Tensor) -> torch.Tensor:
+        assert w.ndim == 2, 'w should be an (N, D) shaped Tensor'
+        assert w.shape[-1] in (2, 3), 'last dimension of w must be size 2 or 3'
+        
+        if w.shape[-1] == 2:
+            # bring LambdaT to original range
+            x = torch.stack((w[:, 0] * self.posterior_samples[:, 0].max(), w[:, 1]), dim=-1)
+        else:
+            # bring Lambda1 and Lambda2 to original range
+            x = torch.stack(
+                (
+                    w[:, 0] * self.posterior_samples[:, 0].max(), 
+                    w[:, 1], 
+                    w[:, 2] * self.posterior_samples[:, 2].max()
+                ),
+                dim=-1
+            )
+        return x
+    
+    def _scale_jacobian(self):
+        if self.method == '2D':
+            # 1 / LambdaT_max
+            return 1 / self.posterior_samples[:, 0].max()
+        else:
+            # 1 / (Lambda1_max * Lambda2_max)
+            return 1 / (self.posterior_samples[:, 0].max() * self.posterior_samples[:, 2].max())
+
+
+class BoundedKDE:
     def __init__(
             self,
             event: str,
@@ -612,150 +701,107 @@ class ReflectKDE:
             get_gw_event_pe_posterior_samples(event, method),
             dim=-1
         )
-        # self.posterior_samples = self.posterior_samples[torch.unique(torch.randint(0, len(self.posterior_samples), (4800,)))]
-        # print(len(self.posterior_samples))
-        self.base_kde = scipy.stats.gaussian_kde(self.posterior_samples.T.numpy())
+
+        whitened_samples = self._scale_down(self.posterior_samples)
+        self.base_kde = scipy.stats.gaussian_kde(whitened_samples.T.numpy())
 
         if method == '2D':
             self.low = torch.tensor([0., 0.], dtype=torch.float32)
             self.high = torch.tensor([torch.inf, 1.], dtype=torch.float32)
+        
         elif method == '3D':
             self.low = torch.tensor([0., 0., 0.], dtype=torch.float32)
             self.high = torch.tensor([torch.inf, 1., torch.inf], dtype=torch.float32)
     
-    def log_pdf(self, x: torch.Tensor, resample: bool = False):
+    def log_pdf(self, x: torch.Tensor, resample: bool = False) -> torch.Tensor:
         return torch.log(self.pdf(x, resample))
 
-    def pdf(self, x: torch.Tensor, resample: bool = False):
+    def pdf(self, x: torch.Tensor, resample: bool = False) -> torch.Tensor:
         """Return an estimate of the density evaluated at the given points."""
         if resample:
             X = self.sample(len(self.posterior_samples))
-            kde = scipy.stats.gaussian_kde(X.T)
+            W = self._scale_down(X)
+            kde = scipy.stats.gaussian_kde(W.T.numpy())
         else:
             kde = self.base_kde               
         
-        p = torch.tensor(kde(x.T.numpy()).T, dtype=torch.float32)
+        w = self._scale_down(x)
+        p = torch.tensor(kde(w.T.numpy()).T, dtype=torch.float32)
         
         for i, (low, high) in enumerate(zip(self.low, self.high)):                
             if torch.isfinite(low):
-                reflect_x = x.clone()
-                reflect_x[:, i] = 2.0 * low - x[:, i]
+                reflect_w = w.clone()
+                reflect_w[:, i] = 2.0 * low - w[:, i]
 
-                p += torch.tensor(kde(reflect_x.T.numpy()).T, dtype=torch.float32)
+                p += torch.tensor(kde(reflect_w.T.numpy()).T, dtype=torch.float32)
 
             if torch.isfinite(high):
-                reflect_x = x.clone()
-                reflect_x[:, i] = 2.0 * high - x[:, i]
-                p += torch.tensor(kde(reflect_x.T.numpy()).T, dtype=torch.float32)
+                reflect_w = w.clone()
+                reflect_w[:, i] = 2.0 * high - w[:, i]
+                
+                p += torch.tensor(kde(reflect_w.T.numpy()).T, dtype=torch.float32)
+        
+        # jacobian of transformation to whitened space
+        p *= self._scale_jacobian()
 
         return p
     
-    def sample(self, size: int):
-        samples = torch.tensor(self.base_kde.resample(size), dtype=torch.float32)
+    def sample(self, size: int) -> torch.Tensor:
+        samples = torch.tensor(self.base_kde.resample(size), dtype=torch.float32).T
+        samples = self._scale_up(samples)
+
         for i, (low, high) in enumerate(zip(self.low, self.high)):
             if low is not None:
-                samples[i, :][samples[i, :] < low] = 2. * low - samples[i, :][samples[i, :] < low]
+                samples[:, i][samples[:, i] < low] = 2. * low - samples[:, i][samples[:, i] < low]
                     
             if high is not None:
-                samples[i, :][samples[i, :] > high] = 2. * high- samples[i, :][samples[i, :] > high]
+                samples[:, i][samples[:, i] > high] = 2. * high - samples[:, i][samples[:, i] > high]
 
-        return samples.T
-    
-    def compute_probability_over_grid(
-            self,
-            N_boxes: int,
-            save_file: str
-        ):
-        eps = 1e-5
-        if self.method == '2D':
-            z_grid = _to_latent_space(
-                torch.stack(
-                    torch.meshgrid(
-                        torch.linspace(eps, 5000, N_boxes),
-                        torch.linspace(eps, 1 - eps, N_boxes),
-                        indexing='xy'
-                    ),
-                    dim=-1
-                ).reshape((N_boxes**2, 2))
-            ).reshape((N_boxes, N_boxes, 2))
-            
-            z_box_probs = torch.zeros((N_boxes - 1, N_boxes - 1, 3))
+        return samples
 
-            for i in range(N_boxes - 1):
-                for j in range(N_boxes - 1):
-                    low = z_grid[i, j]
-                    high = z_grid[i + 1, j + 1]
-
-                    box_prob = self.base_kde.integrate_box(low, high)
-                    z_box_probs[i, j] = torch.hstack((low, torch.tensor(box_prob)))
-
-            x_box_probs = torch.stack(
+    def _scale_down(self, x: torch.Tensor) -> torch.Tensor:
+        assert x.ndim == 2, 'x should be an (N, D) shaped Tensor'
+        assert x.shape[-1] in (2, 3), 'last dimension of x must be size 2 or 3'
+        
+        if x.shape[-1] == 2:
+            # bring LambdaT to original range
+            w = torch.stack((x[:, 0] / self.posterior_samples[:, 0].max(), x[:, 1]), dim=-1)
+        else:
+            # bring Lambda1 and Lambda2 to original range
+            w = torch.stack(
                 (
-                    torch.exp(z_box_probs[:, :, 0]), 
-                    torch.sigmoid(z_box_probs[:, :, 1]), 
-                    z_box_probs[:, :, 2]
-                ), 
+                    x[:, 0] / self.posterior_samples[:, 0].max(), 
+                    x[:, 1], 
+                    x[:, 2] / self.posterior_samples[:, 2].max()
+                ),
                 dim=-1
             )
+
+        return w
+    
+    def _scale_up(self, w: torch.Tensor) -> torch.Tensor:
+        assert w.ndim == 2, 'w should be an (N, D) shaped Tensor'
+        assert w.shape[-1] in (2, 3), 'last dimension of w must be size 2 or 3'
         
+        if w.shape[-1] == 2:
+            # bring LambdaT to original range
+            x = torch.stack((w[:, 0] * self.posterior_samples[:, 0].max(), w[:, 1]), dim=-1)
         else:
-            raise NotImplementedError()
-        
-        torch.save(x_box_probs, save_file)
-
-
-if __name__ == "__main__":
-    flow = NormalizingFlow("GW170817", '2D')
-    kde = TransformKDE("GW170817", '2D')
-    reflectkde = ReflectKDE("GW170817", '2D')
-
-    ng = 100
-
-    LT = torch.linspace(-200., 1500., ng)
-    Q = torch.linspace(-0.20, 1.20, ng)
-    points = torch.stack(torch.meshgrid([LT, Q], indexing='xy'), dim=-1).reshape((ng*ng, 2))
+            # bring Lambda1 and Lambda2 to original range
+            x = torch.stack(
+                (
+                    w[:, 0] * self.posterior_samples[:, 0].max(), 
+                    w[:, 1], 
+                    w[:, 2] * self.posterior_samples[:, 2].max()
+                ),
+                dim=-1
+            )
+        return x
     
-    
-    flow_pgrid = flow.pdf(points).reshape((ng, ng))
-    kde_pgrid = kde.pdf(points).reshape((ng, ng))
-    reflectkde_pgrid = reflectkde.pdf(points).reshape((ng, ng))
-
-    flow_sample = flow.sample(1000)
-    kde_sample = kde.sample(1000)
-    reflectkde_sample = reflectkde.sample(1000)
-
-    fig, ax = plt.subplots(1, 3, figsize=(22, 8))
-    fig.tight_layout()
-
-    qcs = ax[0].contourf(LT, Q, flow_pgrid, levels=50, cmap="inferno")
-    ax[0].scatter(flow_sample[:,0], flow_sample[:,1], c='gray', s=1.5, alpha=0.70)
-    ax[0].set_title('flow')
-    ax[0].set_xlim((torch.min(LT), torch.max(LT)))
-    plt.colorbar(qcs, ax=ax[0])
-
-    qcs = ax[1].contourf(LT, Q, kde_pgrid, levels=50, cmap="inferno")
-    ax[1].scatter(kde_sample[:,0], kde_sample[:,1], c='gray', s=1.5, alpha=0.70)
-    ax[1].set_title('kde')
-    ax[1].set_xlim((torch.min(LT), torch.max(LT)))
-    plt.colorbar(qcs, ax=ax[1])
-
-    qcs = ax[2].contourf(LT, Q, reflectkde_pgrid, levels=50, cmap="inferno")
-    ax[2].scatter(reflectkde_sample[:,0], reflectkde_sample[:,1], c='gray', s=1.5, alpha=0.70)
-    ax[2].set_title('reflectkde')
-    ax[2].set_xlim((torch.min(LT), torch.max(LT)))
-    plt.colorbar(qcs, ax=ax[2])
-
-    plt.savefig("/home/joseph/LocalProjects/GWXtreme/systematics/compare_densities.png")
-    
-
-    # samp = rk.sample(1000)
-    # plt.scatter(samp[:, 0], samp[:, 1])
-    # plt.savefig("./test.png")
-
-    # from .eos_inference import ModelSelector
-
-    # ms = ModelSelector("GW170817", density_est_method='reflectkde')
-    # bf, trials = ms.compute_eos_evidence_ratio('APR4_EPP', 'SLY', 100, N_trials=20, verbose=True)
-    # print(bf, np.mean(trials), np.std(trials))
-    # print(trials)
-
+    def _scale_jacobian(self):
+        if self.method == '2D':
+            # 1 / LambdaT_max
+            return 1 / self.posterior_samples[:, 0].max()
+        else:
+            # 1 / (Lambda1_max * Lambda2_max)
+            return 1 / (self.posterior_samples[:, 0].max() * self.posterior_samples[:, 2].max())
