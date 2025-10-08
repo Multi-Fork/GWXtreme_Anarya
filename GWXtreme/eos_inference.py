@@ -107,7 +107,7 @@ class ModelSelector:
             save_file: str | None = None, 
             N_trials: int = 0,
             verbose: bool = False
-        ):
+        ) -> float | tuple[float, np.ndarray]:
         '''
         This method computes the ratio of evidences for two
         tabulated EoS. It first checks if a file exists with
@@ -205,7 +205,7 @@ class ModelSelector:
         
         return bf, bf_array
 
-    def compute_parameterized_eos_evidence(self, params, N_grid=1000):
+    def compute_parameterized_eos_evidence(self, params, N_grid=1000) -> float:
         '''
         This method computes the evidence for a parametrized EoS.
 
@@ -229,7 +229,7 @@ class ModelSelector:
             min_mass=min_mass
         )
 
-        return evidence
+        return float(evidence)
 
     def _integrate_posterior_for_eos_support(
             self,
@@ -239,7 +239,7 @@ class ModelSelector:
             min_mass: float = 0.1,
             do_ensemble: bool = False,
             N_kde_trials: int = 0,
-        ):
+        ) -> tuple[float, np.ndarray]:
         '''
         This function numerically integrates the KDE along the
         EoS curve.
@@ -274,33 +274,17 @@ class ModelSelector:
 
         points = torch.tensor(points, dtype=torch.float32)
 
-        #####################################################
-        # import matplotlib.pyplot as plt
-        # fig, ax = plt.subplots(1, 3)
-        # ax[0].scatter(lambda1, q)
-        # ax[0].set_xlabel('lambda1')
-        # ax[0].set_ylabel('q')
-        # ax[1].scatter(lambda2, q)
-        # ax[1].set_xlabel('lambda2')
-        # ax[1].set_ylabel('q')
-        # ax[2].scatter(lambda1, lambda2)
-        # ax[2].set_xlabel('lambda1')
-        # ax[2].set_ylabel('lambda2')
-
-        # plt.savefig(f"./testing.png")
-        #####################################################
-
         # perform integration via trapezoidal approximation
         prob_density = self.density_estimator.pdf(points).numpy()
         evidence = np.trapezoid(prob_density, q)
         
         # use normalizing flow(s)
-        if do_ensemble and isinstance(self.density_estimator, NormalizingFlow):
+        if do_ensemble and (isinstance(self.density_estimator, NormalizingFlow) or isinstance(self.density_estimator, ReflectiveNormalizingFlow)):
             ensemble_prob_density = self.density_estimator.ensemble_pdf(points).numpy()
             evidences = np.array(np.trapezoid(ensemble_prob_density, q, axis=1))
                 
         # use KDE
-        elif N_kde_trials > 0 and (isinstance(self.density_estimator, TransformKDE) or isinstance(self.density_estimator, ReflectKDE)):
+        elif N_kde_trials > 0 and isinstance(self.density_estimator, BoundedKDE):
             evidences = np.empty(N_kde_trials)
             for i in range(N_kde_trials):
                 resampled_prob_density = self.density_estimator.pdf(points, resample=True).numpy()
@@ -308,7 +292,7 @@ class ModelSelector:
         else:
             evidences = np.array([])
 
-        return evidence, evidences
+        return float(evidence), evidences
 
 
 class JointModelSelector:
@@ -317,7 +301,7 @@ class JointModelSelector:
             events: list[str],
             method: Literal['2D', '3D'] = '2D',
             prior_files: list[str] | None = None,
-            density_est_method: Literal['kde', 'flow', 'reflectkde'] = 'flow',
+            density_est_method: Literal['kde', 'flow', 'reflectflow'] = 'flow',
             parameterization: Literal['spectral', 'polytrope'] = 'spectral'
         ):
         '''
@@ -365,7 +349,7 @@ class JointModelSelector:
             N_grid: int = 1000,
             verbose: bool = False,
             save_file=None
-        ):
+        ) -> float | tuple[float, np.ndarray]:
         '''
         Loop through each event and compute the joint Bayes-factor.
         Each individual event's Bayes-factor can be accessed from the JointModelSelector
@@ -400,37 +384,6 @@ class JointModelSelector:
         self.all_bayes_factors_errors = []
         
         for model_selector in self.model_selectors:
-            '''NOTE:
-            It seems to be the logical thing to parallelize the run of the
-            individual events on different CPUs using ray. However, it does not
-            seem to be the right thing to do if we want to preserve the
-            scalability of the infrastructure. If the user wants to run this
-            on HTCondor, this is the sequence of events that will follow:
-            1. A condor DAG will be generated to submit accross multiple nodes
-               the multiple jobs such that the number of trials will be
-               distributed accross them.
-            2. In each node then ray will launch parallel processes across
-               various available CPU for the different events.
-            3. Each of these processes will now launch multiple ray processes
-               within the available CPUs in the same node to run trials that are
-               scheduled for this jobs on this Node.
-
-            This will not scale with large number of trials and events. The
-            ideal situation would be to first distribute the individual events
-            across different Nodes, and then from each node multiple jobs will
-            be spawned to multiple nodes that will distribute the trials
-            internally using ray. But it is not obvious to me how this can be
-            done in Condor. Also, running each event on a unique node will
-            require that Condor distributes each event. That will mean that
-            this code should have no way of computing the joint-Bayes-factor.
-            Which would mean that the joint-Bayes-factor computation will only
-            be possible on Condor. Thus, we have decided to keep this part of
-            the computation serial. We will be processing each event
-            sequentially. Thus, upon running the code, for each event ray will
-            spawn multiple processes across available cores and then upon
-            completion will move on to the next event. 
-            '''
-            
             result = model_selector.compute_eos_evidence_ratio(
                 EoS1,
                 EoS2,
@@ -448,7 +401,7 @@ class JointModelSelector:
                 bf = result
             
             joint_bf *= bf
-            self.all_bayes_factors.append(bf)                    
+            self.all_bayes_factors.append(bf)  
 
         if save_file is not None:
             results = {
@@ -463,7 +416,7 @@ class JointModelSelector:
             with open(save_file, 'w+') as f:
                 json.dump(results, f, indent=4, sort_keys=True)
 
-        return [joint_bf, joint_bf_array] if N_trials > 0 else joint_bf
+        return (joint_bf, joint_bf_array) if N_trials > 0 else joint_bf
 
     def compute_parameterized_eos_joint_evidence(self, EoS, N_grid: int = 1000):
         '''
@@ -492,7 +445,7 @@ class ParameterizedEoSSampler:
             events: list[str], 
             method: Literal['2D', '3D'],
             prior_bounds: dict[str, dict[str, dict]],
-            density_est_method: Literal['kde', 'flow', 'reflectkde'] = 'flow',
+            density_est_method: Literal['kde', 'flow', 'reflectflow'] = 'flow',
             parameterization: Literal['spectral', 'polytrope'] = 'spectral',
         ):
         '''
@@ -684,18 +637,46 @@ class ParameterizedEoSSampler:
 
 
 if __name__ == "__main__":
-    ems = ModelSelector(
-        event='GW170817',
-        method='2D',
-        density_est_method='reflectflow',
-        # min_q=0.2,
-        # max_q=0.5,
-        # min_mass=0.9,
-        # max_mass=5.0
+    # ems_flow = ModelSelector(
+    #     event='GW170817',
+    #     method='2D',
+    #     density_est_method='flow',
+    # )
+
+    # ems_kde = ModelSelector(
+    #     event='GW170817',
+    #     method='2D',
+    #     density_est_method='kde'
+    # )
+
+    # from .config import EOS_LIST
+    # from time import perf_counter
+
+    # start = perf_counter()
+    # for i in range(100):
+    #     for eos in EOS_LIST:
+    #         bf = ems_flow.compute_eos_evidence_ratio(eos, 'SLY', N_grid=1000)
+    # flow_time = perf_counter() - start
+    # print(f'flow time = {flow_time:.3f} s')
+
+    # start = perf_counter()
+    # for i in range(100):
+    #     for eos in EOS_LIST:
+    #         bf = ems_kde.compute_eos_evidence_ratio(eos, 'SLY', N_grid=1000)
+    # kde_time = perf_counter() - start
+    # print(f'kde time = {kde_time:.3f} s')
+
+    sampler_flow = ParameterizedEoSSampler(
+        ['GW170817'], 
+        '2D', 
+        prior_bounds={
+            'gamma1': {'params':{"min": 0.2, "max": 2.00}},
+            'gamma2': {'params':{"min": -1.6, "max": 1.7}},
+            'gamma3': {'params':{"min": -0.6, "max": 0.6}},
+            'gamma4': {'params':{"min": -0.02, "max": 0.02}}
+        },
+        density_est_method='kde'
     )
 
-    from .config import EOS_LIST
-    from time import sleep
-    for eos in EOS_LIST:
-        bf = ems.compute_eos_evidence_ratio(eos, 'SLY', N_grid=1000)
-        print(eos, bf)
+    sampler_flow.initialize_walkers(50)
+    sampler_flow.run_sampler(10_000, N_pool=1, N_grid=1000, save_file=".")

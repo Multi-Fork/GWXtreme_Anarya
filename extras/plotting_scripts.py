@@ -199,7 +199,7 @@ def plot_EoS_constraints(
         EoS_list: list[str],
         save_file: str
 ):
-    colors = ["#2D199A","#33af37","#ea7164"]
+    colors = ["#0E6316","#d62728","#251b9a"]
     hatches = ["","|","-"]
 
     plt.figure(figsize=(12,12))
@@ -221,9 +221,12 @@ def plot_EoS_constraints(
         plt.plot(np.log10(rho), logp, 'k', linewidth=2.0, label=EoS, alpha=0.45)
 
     plt.xlim([min(np.log10(rho)), 18.25])
-    plt.xlabel(r'$\log10{\frac{\rho}{g cm^-3}}$',fontsize=20)
-    plt.ylabel(r'$log10(\frac{p}{dyne cm^{-2}})$',fontsize=20)
+    # plt.xlabel(r'$\log10{\frac{\rho}{g cm^-3}}$',fontsize=20)
+    # plt.ylabel(r'$log10(\frac{p}{dyne cm^{-2}})$',fontsize=20)
+    plt.xlabel('Log Density')
+    plt.ylabel('Log Pressure')
     plt.legend()
+    plt.grid()
     plt.savefig(save_file, bbox_inches='tight')
 
 

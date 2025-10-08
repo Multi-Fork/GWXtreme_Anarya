@@ -13,7 +13,14 @@ import matplotlib.collections
 import matplotlib.pyplot as plt
 
 from .config import SUPPORTED_EVENTS, GW_PE_POSTERIOR_FILES, GWXTREME_FLOW_FILES, GWXTREME_KDE_GRID_FILES
-from .utils import _read_prior_or_posterior_file
+from .utils import (
+    _read_prior_or_posterior_file, 
+    get_eos_interpolant_from_parameters, 
+    get_eos_interpolant, 
+    get_lambdat_for_eos, 
+    apply_mass_constraint,
+    get_masses
+)
 
 
 def learn_flow(
@@ -286,7 +293,7 @@ class NormalizingFlow:
         assert event in SUPPORTED_EVENTS, f"event must be one of {SUPPORTED_EVENTS}."
         self.event = event
         self.native_flow, self.flow_ensemble = get_gw_event_pe_posterior_normalizing_flows(event, method)
-        self.kde_prob_grid = get_gw_event_pe_posterior_kde_grid(event, method)
+        # self.kde_prob_grid = get_gw_event_pe_posterior_kde_grid(event, method)
             
     def set_normalizing_flows(self, native_flow=None, flow_ensemble: list | None = None):
         if native_flow is not None: self.native_flow = native_flow 
@@ -426,22 +433,53 @@ class NormalizingFlow:
         
         torch.save(box_probs, save_file)
 
-    def plot_density(self, N_grid: int = 200, save_file: str | None = None):
+    def plot_density(
+            self, 
+            N_grid: int = 200, 
+            eos_list: list = [], 
+            mean_chirp_mass: float | None = None,
+            min_mass: float | None = None,
+            save_file: str | None = None
+    ):
         if self.method == '2D':        
             lambdat, q = get_gw_event_pe_posterior_samples(self.event, self.method) # type: ignore
 
             fig, ax = plt.subplots(figsize=(7, 7))
-            lt_grid, q_grid = torch.meshgrid([torch.linspace(0., lambdat.max(), N_grid), torch.linspace(0.0, 1.0, N_grid)])
+            lt_grid, q_grid = torch.meshgrid([torch.linspace(0., lambdat.max(), N_grid), torch.linspace(0.0, 1.0, N_grid)], indexing='xy')
             points = torch.stack([lt_grid, q_grid], dim=-1).reshape((N_grid**2, 2))
             lp = self.log_pdf(points).reshape((N_grid, N_grid)).detach()
             p = torch.exp(lp)
 
-            qcs = ax.contourf(lt_grid, q_grid, p, cmap='inferno')
+            qcs = ax.contourf(lt_grid, q_grid, p, levels=50, cmap='inferno')
             plt.colorbar(qcs, ax=ax)
-            ax.scatter(x=lambdat, y=q, s=0.25, c='gray', alpha=0.40)
-            ax.set_title(self.event)
-            ax.set_xlabel(r'$\tilde{\Lambda}$', fontsize=14)
-            ax.set_ylabel(r'$q$', fontsize=14)
+            ax.scatter(x=lambdat, y=q, s=0.18, c='gray', alpha=0.30)
+            # ax.set_title(self.event)
+            # ax.set_xlabel(r'$\tilde{\Lambda}$', fontsize=14)
+            # ax.set_ylabel(r'$q$', fontsize=14)
+
+            ax.set_xlabel('Effective Tidal Deformability', fontsize=14)
+            ax.set_ylabel('Mass Ratio', fontsize=14)
+
+            if len(eos_list) > 0: assert (mean_chirp_mass is not None and min_mass is not None), "Must pass mean_chirp_mass and min_mass to plot EOS curves."
+            eos_q = np.linspace(0.01, 1.0, N_grid)
+            m1, m2 = get_masses(eos_q, mean_chirp_mass)
+            m1, m2, eos_q = apply_mass_constraint(m1, m2, eos_q, min_mass)
+
+            colors = ["#97972E", "#378F53", "#B86C44", "#56B1C6"]
+            for eos, color in zip(eos_list, colors):
+                if type(eos) in [tuple, list, np.ndarray]:
+                    s, _, max_mass_eos, min_mass = get_eos_interpolant_from_parameters(eos, parameterization='spectral', N_points=300, m_min=min_mass)
+
+                    # label for parameterized EOS
+                    eos = "Inferred Spectral Parameterization"
+
+                else:
+                    s, _, _, max_mass_eos = get_eos_interpolant(eos, m_min=min_mass, N_points=1000)
+
+                eos_lambdat = get_lambdat_for_eos(m1, m2, max_mass_eos, s)
+                plt.plot(eos_lambdat, eos_q, linewidth=1, label=eos, alpha=0.9, color=color)
+            
+            plt.legend()
 
         else:
             lambda1, q, lambda2 = get_gw_event_pe_posterior_samples(self.event, self.method) # type: ignore
@@ -480,7 +518,7 @@ class NormalizingFlow:
             ax[2].set_ylabel(r"$\Lambda_2$")
 
         if save_file is not None:
-            fig.savefig(save_file, bbox_inches='tight', dpi='figure')
+            fig.savefig(save_file, bbox_inches='tight', dpi=300)
         else:
             plt.show()
 
@@ -579,6 +617,37 @@ class ReflectiveNormalizingFlow:
 
     def log_pdf(self, x: torch.Tensor) -> torch.Tensor:
         return torch.log(self.pdf(x))
+    
+    def ensemble_pdf(self, x: torch.Tensor) -> torch.Tensor:
+        assert self.flow_ensemble is not None, "No normalizing flow ensemble has been set."
+        probs = torch.zeros((len(self.flow_ensemble), len(x)))
+
+        w = self._scale_down(x)
+        for i in range(len(self.flow_ensemble)):
+            p = torch.exp(self.flow_ensemble[i]().log_prob(w).detach())
+            
+            for i, (low, high) in enumerate(zip(self.low, self.high)):                
+                if torch.isfinite(low):
+                    reflect_w = w.clone()
+                    reflect_w[:, i] = 2.0 * low - w[:, i]
+
+                    p += torch.exp(self.flow_ensemble[i]().log_prob(reflect_w).detach())
+
+                if torch.isfinite(high):
+                    reflect_w = w.clone()
+                    reflect_w[:, i] = 2.0 * high - w[:, i]
+
+                    p += torch.exp(self.flow_ensemble[i]().log_prob(reflect_w).detach())
+
+            # jacobian of transformation to whitened space
+            p *= self._scale_jacobian()
+
+            probs[i] = p
+
+        return probs
+    
+    def ensemble_log_pdf(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.log(self.ensemble_pdf(x))
     
     def plot_density(self, N_grid: int = 200, save_file: str | None = None):
         if self.method == '2D':        
@@ -690,7 +759,8 @@ class BoundedKDE:
     def __init__(
             self,
             event: str,
-            method: Literal['2D', '3D'] = '2D'
+            method: Literal['2D', '3D'] = '2D',
+            Ns=None
     ):    
         assert method in ['2D', '3D'], "method must be one of ['2D', '3D']"
         self.method = method
@@ -701,6 +771,9 @@ class BoundedKDE:
             get_gw_event_pe_posterior_samples(event, method),
             dim=-1
         )
+
+        if Ns is not None:
+            self.posterior_samples = self.posterior_samples[:Ns]
 
         whitened_samples = self._scale_down(self.posterior_samples)
         self.base_kde = scipy.stats.gaussian_kde(whitened_samples.T.numpy())

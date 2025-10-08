@@ -17,9 +17,9 @@ def compute_single_event_bayes_factors(
         event: str,
         method: Literal['2D', '3D'],
         waveform: Literal['TaylorF2', 'IMRPhenomD_NRTidalv2'],
-        density_est_method: Literal['kde', 'flow', 'reflectkde'],
+        density_est_method: Literal['kde', 'flow', 'reflectflow'],
         EoS_names: list[str] = EOS_LIST,
-        N_trials: int = 10_000,
+        N_trials: int = 0,
         save_file: str | None = None
 ):
     """
@@ -40,22 +40,22 @@ def compute_single_event_bayes_factors(
             N_trials=N_trials
         )
 
-        if N_trials == 0:
+        if type(result) != tuple: # no repeated trials are returned
             bf = result
             bf_trials = []
         else:
             bf, bf_trials = result
             bf_trials = bf_trials.tolist()
         
-        if density_est_method == 'flow':
+        if density_est_method == 'kde':
             BFs[method][waveform][density_est_method][EoS] = {
                 "native": bf,
-                "ensemble": bf_trials
+                "resamples": bf_trials
             }
         else:
             BFs[method][waveform][density_est_method][EoS] = {
                 "native": bf,
-                "resamples": bf_trials
+                "ensemble": bf_trials
             }
     
     if save_file is not None:
