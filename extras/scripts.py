@@ -17,7 +17,7 @@ def compute_single_event_bayes_factors(
         event: str,
         method: Literal['2D', '3D'],
         waveform: Literal['TaylorF2', 'IMRPhenomD_NRTidalv2'],
-        density_est_method: Literal['kde', 'flow', 'reflectflow'],
+        density_est_method: Literal['kde', 'flow'],
         EoS_names: list[str] = EOS_LIST,
         N_trials: int = 0,
         save_file: str | None = None
@@ -136,10 +136,10 @@ def combine_bayes_factors_files(
     return save_file
 
 
-def sample_spectral_EoS_parameters(
+def sample_spectral_eos_parameters(
         event: str,
         method: Literal['2D', '3D'],
-        density_est_method: Literal['kde', 'flow', 'reflectkde'],
+        density_est_method: Literal['kde', 'flow'],
         save_file: str,
         N_pool: int,
         N_walkers: int = 100,
@@ -162,7 +162,7 @@ def sample_spectral_EoS_parameters(
     sampler.run_sampler(N_samples, N_pool=N_pool, N_grid=1000, save_file=save_file)
 
 
-def compute_EoS_constraints_from_spectral_samples(
+def compute_eos_constraints_from_spectral_samples(
         spectral_samples_file: str,
         burn_in_frac: float = 0.5,
         thin_every: int = 5,
@@ -204,7 +204,7 @@ def compute_EoS_constraints_from_spectral_samples(
     return out
 
 
-def compute_lambdas_from_spectral_EoS_samples(
+def compute_lambdas_from_spectral_eos_samples(
         spectral_samples_file: str, # .txt
         save_file: str | None = None
 ):
@@ -240,7 +240,7 @@ def compute_lambdas_from_spectral_EoS_samples(
     return lambdas
 
 
-def compute_max_masses_from_spectral_EoS_samples(
+def compute_max_masses_from_spectral_eos_samples(
         spectral_samples_file: str,
         save_file: str | None = None
 ):
@@ -254,9 +254,7 @@ def compute_max_masses_from_spectral_EoS_samples(
     else:
         raise ValueError("Samples file type must be .h5 or .txt.")
     
-    maxMasses = []
-    m = 1.4
-    
+    maxMasses = []    
     for sample in samples:
         g0, g1, g2, g3 = sample
         EoS = lalsim.SimNeutronStarEOS4ParameterSpectralDecomposition(g0, g1, g2, g3)

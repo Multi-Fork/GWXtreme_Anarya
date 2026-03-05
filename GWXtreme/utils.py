@@ -5,7 +5,6 @@ import pathlib
 import h5py
 import numpy as np
 import scipy.interpolate
-
 import lal
 import lalsimulation as lalsim
 
@@ -238,6 +237,7 @@ def get_eos_lambdas_from_masses(masses: np.ndarray, eos_fam) -> tuple[np.ndarray
     lambdas = np.array(lambdas)
     grav_masses = np.array(grav_masses)
     return grav_masses, lambdas
+
 
 def _read_prior_or_posterior_file(posterior_file: str, method: Literal['2D', '3D']) -> dict:
     posterior_file_ = pathlib.Path(posterior_file)

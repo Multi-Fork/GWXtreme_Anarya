@@ -14,7 +14,6 @@
 # You should have received a copy of the GNU General Public License along
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-
 import os
 import json
 import multiprocessing
@@ -37,8 +36,8 @@ from .utils import (
     apply_mass_constraint,
     _read_prior_or_posterior_file
 )
-from .density_estimation import NormalizingFlow, ReflectiveNormalizingFlow, BoundedKDE
-from .config import SUPPORTED_EVENTS, GW_PE_POSTERIOR_FILES
+from .density_estimation import NormalizingFlow, BoundedKDE
+from .config import SUPPORTED_GW_EVENTS, CBC_PE_POSTERIOR_FILES
 
 
 class ModelSelector:
@@ -47,7 +46,8 @@ class ModelSelector:
             event: str,
             prior_file: str | None = None,
             method: Literal['2D', '3D'] = '2D',
-            density_est_method: Literal['kde', 'flow', 'reflectflow'] = 'flow',
+            density_est_method: Literal['kde', 'flow'] = 'kde',
+            flow_file: str | None = None,
             parameterization: Literal['spectral', 'polytrope'] = 'spectral',
             min_mass: float | None = None,
             min_q: float | None = None,
@@ -66,16 +66,16 @@ class ModelSelector:
                          to determine the bounds.
         '''
         assert method in ['2D', '3D']
-        assert density_est_method in ['kde', 'flow', 'reflectflow']
+        assert density_est_method in ['kde', 'flow']
         assert parameterization in ['spectral', 'polytrope']
-        assert event in SUPPORTED_EVENTS, f'event must be one of {SUPPORTED_EVENTS}'
+        assert event in SUPPORTED_GW_EVENTS, f'event must be one of {SUPPORTED_GW_EVENTS}'
         
         self.method = method
         self.density_est_method = density_est_method
         self.parameterization = parameterization
         self.event = event
         
-        posterior_file = GW_PE_POSTERIOR_FILES[event][method]
+        posterior_file = CBC_PE_POSTERIOR_FILES[event][method]
         data = _read_prior_or_posterior_file(posterior_file, method)
         self.data = {k:v for k, v in data.items() if v is not None}
         
@@ -93,11 +93,10 @@ class ModelSelector:
             self.q_max = max_q if max_q else np.max(self.data['q'])
 
         if density_est_method == "flow":
-            self.density_estimator = NormalizingFlow(event=event, method=method)
+            assert flow_file is not None
+            self.density_estimator = NormalizingFlow(event=event, method=method, flow_file=flow_file)
         elif density_est_method == "kde":
             self.density_estimator = BoundedKDE(event, method)
-        elif density_est_method == 'reflectflow':
-            self.density_estimator = ReflectiveNormalizingFlow(event, method)
 
     def compute_eos_evidence_ratio(
             self,
@@ -171,7 +170,6 @@ class ModelSelector:
             s1, 
             max_mass_eos1,
             N_grid=N_grid,
-            do_ensemble=(N_trials > 0),
             min_mass=max(self.min_mass, min_mass1),
             N_kde_trials=N_trials,
         )
@@ -180,7 +178,6 @@ class ModelSelector:
             s2, 
             max_mass_eos2,
             N_grid=N_grid,
-            do_ensemble=(N_trials > 0),
             min_mass=max(self.min_mass, min_mass2),
             N_kde_trials=N_trials,
         )
@@ -237,7 +234,6 @@ class ModelSelector:
             max_mass_eos: float,
             N_grid: int = 1000,
             min_mass: float = 0.1,
-            do_ensemble: bool = False,
             N_kde_trials: int = 0,
         ) -> tuple[float, np.ndarray]:
         '''
@@ -278,10 +274,8 @@ class ModelSelector:
         prob_density = self.density_estimator.pdf(points).numpy()
         evidence = np.trapezoid(prob_density, q)
         
-        # use normalizing flow(s)
-        if do_ensemble and (isinstance(self.density_estimator, NormalizingFlow) or isinstance(self.density_estimator, ReflectiveNormalizingFlow)):
-            ensemble_prob_density = self.density_estimator.ensemble_pdf(points).numpy()
-            evidences = np.array(np.trapezoid(ensemble_prob_density, q, axis=1))
+        if isinstance(self.density_estimator, BayesianFlow):
+            evidences = np.array([])
                 
         # use KDE
         elif N_kde_trials > 0 and isinstance(self.density_estimator, BoundedKDE):
@@ -301,7 +295,7 @@ class JointModelSelector:
             events: list[str],
             method: Literal['2D', '3D'] = '2D',
             prior_files: list[str] | None = None,
-            density_est_method: Literal['kde', 'flow', 'reflectflow'] = 'flow',
+            density_est_method: Literal['kde', 'flow'] = 'flow',
             parameterization: Literal['spectral', 'polytrope'] = 'spectral'
         ):
         '''
@@ -445,7 +439,7 @@ class ParameterizedEoSSampler:
             events: list[str], 
             method: Literal['2D', '3D'],
             prior_bounds: dict[str, dict[str, dict]],
-            density_est_method: Literal['kde', 'flow', 'reflectflow'] = 'flow',
+            density_est_method: Literal['kde', 'flow'] = 'flow',
             parameterization: Literal['spectral', 'polytrope'] = 'spectral',
         ):
         '''
@@ -634,49 +628,3 @@ class ParameterizedEoSSampler:
         with h5py.File(samples_file) as f:
             self.samples = np.array(f['samples'])
             self.logp = np.array(f['logp'])
-
-
-if __name__ == "__main__":
-    # ems_flow = ModelSelector(
-    #     event='GW170817',
-    #     method='2D',
-    #     density_est_method='flow',
-    # )
-
-    # ems_kde = ModelSelector(
-    #     event='GW170817',
-    #     method='2D',
-    #     density_est_method='kde'
-    # )
-
-    # from .config import EOS_LIST
-    # from time import perf_counter
-
-    # start = perf_counter()
-    # for i in range(100):
-    #     for eos in EOS_LIST:
-    #         bf = ems_flow.compute_eos_evidence_ratio(eos, 'SLY', N_grid=1000)
-    # flow_time = perf_counter() - start
-    # print(f'flow time = {flow_time:.3f} s')
-
-    # start = perf_counter()
-    # for i in range(100):
-    #     for eos in EOS_LIST:
-    #         bf = ems_kde.compute_eos_evidence_ratio(eos, 'SLY', N_grid=1000)
-    # kde_time = perf_counter() - start
-    # print(f'kde time = {kde_time:.3f} s')
-
-    sampler_flow = ParameterizedEoSSampler(
-        ['GW170817'], 
-        '2D', 
-        prior_bounds={
-            'gamma1': {'params':{"min": 0.2, "max": 2.00}},
-            'gamma2': {'params':{"min": -1.6, "max": 1.7}},
-            'gamma3': {'params':{"min": -0.6, "max": 0.6}},
-            'gamma4': {'params':{"min": -0.02, "max": 0.02}}
-        },
-        density_est_method='kde'
-    )
-
-    sampler_flow.initialize_walkers(50)
-    sampler_flow.run_sampler(10_000, N_pool=1, N_grid=1000, save_file=".")
