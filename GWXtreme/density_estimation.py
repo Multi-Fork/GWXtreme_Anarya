@@ -10,8 +10,7 @@ import matplotlib.patches
 import matplotlib.collections
 import matplotlib.pyplot as plt
 
-from .config import SUPPORTED_GW_EVENTS, CBC_PE_POSTERIOR_FILES
-from .utils import _read_prior_or_posterior_file
+from .utils import get_gw_event_pe_posterior_samples
 
 
 def learn_flow(
@@ -80,21 +79,6 @@ def learn_flow(
     summary_save_file.write_text(training_summary)
 
     return epoch_mean_losses
-
-
-def get_gw_event_pe_posterior_samples(event: str, method: Literal['2D', '3D']):
-    posterior_file = CBC_PE_POSTERIOR_FILES[event][method]
-    
-    samples = _read_prior_or_posterior_file(posterior_file, method)
-    
-    if method == '2D':
-        return torch.tensor(samples['lambdat'], dtype=torch.float32), torch.tensor(samples['q'], dtype=torch.float32)
-    elif method == '3D':
-        return torch.tensor(samples['lambda1'], dtype=torch.float32), \
-            torch.tensor(samples['q'], dtype=torch.float32), \
-            torch.tensor(samples['lambda2'], dtype=torch.float32)
-    else:
-        raise NotImplementedError()
 
 
 def plot_probability(box_probs: torch.Tensor, title: str, save_file: str | None = None):    
@@ -224,21 +208,19 @@ def _scale_jacobian(lambdat_max=None, lambda1_max=None, lambda2_max=None):
 class NormalizingFlow:
     def __init__(
             self,
-            event: str,
             flow_file: str,
+            posterior_file: str,
             method: Literal['2D', '3D'] = '2D'
     ):    
         assert method in ['2D', '3D'], "method must be one of ['2D', '3D']"
         self.method = method
         
-        assert event in SUPPORTED_GW_EVENTS, f"event must be one of {SUPPORTED_GW_EVENTS}."
-        self.event = event
         self.flow = torch.load(flow_file, weights_only=False)
 
         # Need everything else below if reflection method is used for bounding output
         # instead of transformation method (default).
         self.posterior_samples = torch.stack(
-            get_gw_event_pe_posterior_samples(event, method),
+            get_gw_event_pe_posterior_samples(posterior_file, method),
             dim=-1
         )
 
@@ -359,7 +341,7 @@ class NormalizingFlow:
             save_file: str | None = None
     ):
         if self.method == '2D':        
-            lambdat, q = get_gw_event_pe_posterior_samples(self.event, self.method) # type: ignore
+            lambdat, q = self.posterior_samples[:, 0], self.posterior_samples[:, 1]
 
             fig, ax = plt.subplots(figsize=(7, 7))
             lt_grid, q_grid = torch.meshgrid([torch.linspace(0., lambdat.max(), N_grid), torch.linspace(0.0, 1.0, N_grid)], indexing='xy')
@@ -370,13 +352,12 @@ class NormalizingFlow:
             qcs = ax.contourf(lt_grid, q_grid, p, levels=50, cmap='inferno')
             plt.colorbar(qcs, ax=ax)
             ax.scatter(x=lambdat, y=q, s=0.18, c='gray', alpha=0.30)
-            ax.set_title(self.event)
             ax.set_xlabel(r'$\tilde{\Lambda}$', fontsize=14)
             ax.set_ylabel(r'$q$', fontsize=14)
             plt.legend()
 
         else:
-            lambda1, q, lambda2 = get_gw_event_pe_posterior_samples(self.event, self.method) # type: ignore
+            lambda1, q, lambda2 = self.posterior_samples[:, 0], self.posterior_samples[:, 1], self.posterior_samples[:, 2]
 
             fig, ax = plt.subplots(1, 3, figsize=(18, 6), width_ratios=[0.20, 0.20, 0.20])
 
@@ -420,17 +401,15 @@ class NormalizingFlow:
 class BoundedKDE:
     def __init__(
             self,
-            event: str,
+            posterior_file: str,
             method: Literal['2D', '3D'] = '2D',
             Ns=None
     ):    
         assert method in ['2D', '3D'], "method must be one of ['2D', '3D']"
         self.method = method
-        assert event in SUPPORTED_GW_EVENTS, f"event must be one of {SUPPORTED_GW_EVENTS}."
-        self.event = event
         
         self.posterior_samples = torch.stack(
-            get_gw_event_pe_posterior_samples(event, method),
+            get_gw_event_pe_posterior_samples(posterior_file, method),
             dim=-1
         )
 

@@ -4,9 +4,12 @@ import pathlib
 
 import h5py
 import numpy as np
+import torch
 import scipy.interpolate
 import lal
 import lalsimulation as lalsim
+
+from .eos_prior import compute_log_pressure_from_eos, create_spectral_eos
 
 
 def get_masses(q, mc):
@@ -327,3 +330,124 @@ def _read_prior_or_posterior_file(posterior_file: str, method: Literal['2D', '3D
         'lambda1': lambda1,
         'lambda2': lambda2
     }
+
+
+def get_gw_event_pe_posterior_samples(posterior_file: str, method: Literal['2D', '3D']):    
+    samples = _read_prior_or_posterior_file(posterior_file, method)
+    
+    if method == '2D':
+        return torch.tensor(samples['lambdat'], dtype=torch.float32), torch.tensor(samples['q'], dtype=torch.float32)
+    elif method == '3D':
+        return torch.tensor(samples['lambda1'], dtype=torch.float32), \
+            torch.tensor(samples['q'], dtype=torch.float32), \
+            torch.tensor(samples['lambda2'], dtype=torch.float32)
+    else:
+        raise NotImplementedError()
+    
+
+def compute_eos_constraints_from_spectral_samples(
+        spectral_samples_file: str,
+        burn_in_frac: float = 0.5,
+        thin_every: int = 5,
+        save_file: str | None = None
+):
+    # Load the samples   
+    file_type = pathlib.Path(spectral_samples_file).suffix
+    if file_type == '.h5':
+        with h5py.File(spectral_samples_file) as f:
+            samples = np.array(f['samples'], dtype=np.float32)
+    elif file_type == '.txt':
+        samples = np.loadtxt(spectral_samples_file, dtype=np.float32)
+    else:
+        raise ValueError("Samples file type must be .h5 or .txt.")
+    
+    # "Clean" the samples
+    np.nan_to_num(samples, copy=False)
+    burn_in = int(samples.shape[0]*burn_in_frac)
+    samples = samples[burn_in::thin_every]
+    
+    # Turn into confidence interval data
+    logp = []
+    rho = np.logspace(17.1, 18.25, 1000)
+
+    for s in samples:
+        logp.append(compute_log_pressure_from_eos(rho, create_spectral_eos(s)))
+
+    logp = np.array(logp)
+    logp_CIup =  np.quantile(logp, 0.95, axis=0)
+    logp_CIlow = np.quantile(logp, 0.05, axis=0)
+    logp_med =   np.quantile(logp, 0.50, axis=0)
+
+    out = np.array([rho, logp_CIlow, logp_med, logp_CIup]).T
+
+    if save_file is not None:
+        # Save credible interval data
+        np.savetxt(save_file, out)
+    
+    return out
+
+
+def compute_lambdas_from_spectral_eos_samples(
+        spectral_samples_file: str, # .txt
+        save_file: str | None = None
+):
+    # Load the samples   
+    file_type = pathlib.Path(spectral_samples_file).suffix
+    if file_type == '.h5':
+        with h5py.File(spectral_samples_file) as f:
+            samples = np.array(f['samples'], dtype=np.float32)
+    elif file_type == '.txt':
+        samples = np.loadtxt(spectral_samples_file, dtype=np.float32)
+    else:
+        raise ValueError("Samples file type must be .h5 or .txt.")
+    
+    lambdas = []
+    m = 1.4
+ 
+    for sample in samples:
+        g0, g1, g2, g3 = sample
+        EoS = lalsim.SimNeutronStarEOS4ParameterSpectralDecomposition(g0, g1, g2, g3)
+        fam = lalsim.CreateSimNeutronStarFamily(EoS)
+
+        rr = lalsim.SimNeutronStarRadius(m*lal.MSUN_SI, fam)
+        kk = lalsim.SimNeutronStarLoveNumberK2(m*lal.MSUN_SI, fam)
+        cc = m*lal.MRSUN_SI/rr
+        lambda_ = (2/3)*kk/(cc**5)
+        lambdas.append(lambda_)
+    
+    lambdas = np.array(lambdas).T
+
+    if save_file is not None:
+        np.savetxt(save_file, lambdas)
+    
+    return lambdas
+
+
+def compute_max_masses_from_spectral_eos_samples(
+        spectral_samples_file: str,
+        save_file: str | None = None
+):
+    # Load the samples   
+    file_type = pathlib.Path(spectral_samples_file).suffix
+    if file_type == '.h5':
+        with h5py.File(spectral_samples_file) as f:
+            samples = np.array(f['samples'], dtype=np.float32)
+    elif file_type == '.txt':
+        samples = np.loadtxt(spectral_samples_file, dtype=np.float32)
+    else:
+        raise ValueError("Samples file type must be .h5 or .txt.")
+    
+    maxMasses = []    
+    for sample in samples:
+        g0, g1, g2, g3 = sample
+        EoS = lalsim.SimNeutronStarEOS4ParameterSpectralDecomposition(g0, g1, g2, g3)
+        fam = lalsim.CreateSimNeutronStarFamily(EoS)
+        maxMass = lalsim.SimNeutronStarMaximumMass(fam)/lal.MSUN_SI
+        maxMasses.append(maxMass)
+    
+    maxMasses = np.array(maxMasses).T
+
+    if save_file is not None:
+        np.savetxt(save_file, maxMasses)
+    
+    return maxMasses

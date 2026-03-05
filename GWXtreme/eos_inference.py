@@ -37,21 +37,16 @@ from .utils import (
     _read_prior_or_posterior_file
 )
 from .density_estimation import NormalizingFlow, BoundedKDE
-from .config import SUPPORTED_GW_EVENTS, CBC_PE_POSTERIOR_FILES
 
 
 class ModelSelector:
     def __init__(
             self,
-            event: str,
-            prior_file: str | None = None,
+            prior_file: str,
+            posterior_file: str,
             method: Literal['2D', '3D'] = '2D',
             density_est_method: Literal['kde', 'flow'] = 'kde',
             flow_file: str | None = None,
-            parameterization: Literal['spectral', 'polytrope'] = 'spectral',
-            min_mass: float | None = None,
-            min_q: float | None = None,
-            max_q: float | None = None
         ):
         '''
         Initiates the Bayes factor calculator with the posterior
@@ -67,41 +62,31 @@ class ModelSelector:
         '''
         assert method in ['2D', '3D']
         assert density_est_method in ['kde', 'flow']
-        assert parameterization in ['spectral', 'polytrope']
-        assert event in SUPPORTED_GW_EVENTS, f'event must be one of {SUPPORTED_GW_EVENTS}'
         
         self.method = method
         self.density_est_method = density_est_method
-        self.parameterization = parameterization
-        self.event = event
         
-        posterior_file = CBC_PE_POSTERIOR_FILES[event][method]
         data = _read_prior_or_posterior_file(posterior_file, method)
         self.data = {k:v for k, v in data.items() if v is not None}
         
         # If a prior file is given, use that (expecting it to contain the same as what's in the posterior file for the event/method), and if not,
         # try to use specifically passed values for min_mass, max_mass, min_q, and max_q. If those are not passed, take them from the posterior samples.
-        if prior_file is not None:
-            prior = _read_prior_or_posterior_file(prior_file, method)
-        
-            self.min_mass = np.min(prior['m2_source'])
-            self.q_max = np.max(prior['q'])
-            self.q_min = np.min(prior['q'])
-        else:
-            self.min_mass = min_mass if min_mass else np.min(self.data['m2_source'])
-            self.q_min = min_q if min_q else np.min(self.data['q'])
-            self.q_max = max_q if max_q else np.max(self.data['q'])
+        prior = _read_prior_or_posterior_file(prior_file, method)
+    
+        self.min_mass = np.min(prior['m2_source'])
+        self.q_max = np.max(prior['q'])
+        self.q_min = np.min(prior['q'])
 
         if density_est_method == "flow":
             assert flow_file is not None
-            self.density_estimator = NormalizingFlow(event=event, method=method, flow_file=flow_file)
+            self.density_estimator = NormalizingFlow(method=method, flow_file=flow_file, posterior_file=posterior_file)
         elif density_est_method == "kde":
-            self.density_estimator = BoundedKDE(event, method)
+            self.density_estimator = BoundedKDE(posterior_file=posterior_file, method=method)
 
     def compute_eos_evidence_ratio(
             self,
-            EoS1: str,
-            EoS2: str,
+            target_eos: str,
+            ref_eos: str,
             N_grid: int = 1000,
             save_file: str | None = None, 
             N_trials: int = 0,
@@ -116,10 +101,10 @@ class ModelSelector:
         conducted for multiple trials to get an estimation of
         the uncertainty.
 
-        EoS1    :: The name of the first tabulated equation of
+        target_eos    :: The name of the first tabulated equation of
                    state or the name of the file from which the
                    EoS data is to be read.
-        EoS2    :: The name of the second tabulated equation of
+        ref_eos    :: The name of the second tabulated equation of
                    state or the name of the file from which the
                    EoS data is to be read.
         N_grid   :: Number of grid points over which the
@@ -131,35 +116,35 @@ class ModelSelector:
         # generate interpolators for both EOS
         min_mass1, min_mass2 = 0., 0.
 
-        if type(EoS2) == list:
-            [s2, _, max_mass_eos2, min_mass2] = get_eos_interpolant_from_parameters(EoS2, N=1000)
+        if type(ref_eos) == list:
+            [s2, _, max_mass_eos2, min_mass2] = get_eos_interpolant_from_parameters(ref_eos, N=1000)
 
-        elif os.path.exists(EoS2):
+        elif os.path.exists(ref_eos):
             if verbose: print('Trying m-R-k file to compute EoS interpolant')
             try:
-                [s2, _, _, max_mass_eos2] = get_eos_interpolant_from_mass_radius_file(EoS2)
+                [s2, _, _, max_mass_eos2] = get_eos_interpolant_from_mass_radius_file(ref_eos)
             except ValueError:
                 if verbose: print('Trying m-λ file to compute EoS interpolant')
-                [s2, _, _, max_mass_eos2] = get_eos_interpolant_from_mass_tidal_file(EoS2)
+                [s2, _, _, max_mass_eos2] = get_eos_interpolant_from_mass_tidal_file(ref_eos)
         else:
-            [s2, _, _, max_mass_eos2] = get_eos_interpolant(EoS=EoS2, m_min=self.min_mass, N_points=100)
+            [s2, _, _, max_mass_eos2] = get_eos_interpolant(EoS=ref_eos, m_min=self.min_mass, N_points=100)
 
         # Check the return values from get_eos_interpolant(), which may return [nan, nan, nan, nan] if the
         # system is a BBH.
         assert [s2, max_mass_eos2] != [np.nan, np.nan], "The system being studied is a binary black hole system."
 
-        if type(EoS1) is list:
-            [s1, _, max_mass_eos1, min_mass1] = get_eos_interpolant_from_parameters(EoS1, N=1000)
+        if type(target_eos) is list:
+            [s1, _, max_mass_eos1, min_mass1] = get_eos_interpolant_from_parameters(target_eos, N=1000)
 
-        elif os.path.exists(EoS1):
+        elif os.path.exists(target_eos):
             if verbose: print('Trying m-R-k file to compute EoS interpolant')
             try:
-                [s1, _, _, max_mass_eos1] = get_eos_interpolant_from_mass_radius_file(EoS1)
+                [s1, _, _, max_mass_eos1] = get_eos_interpolant_from_mass_radius_file(target_eos)
             except ValueError:
                 if verbose: print('Trying m-λ file to compute EoS interpolant')
-                [s1, _, _, max_mass_eos1] = get_eos_interpolant_from_mass_tidal_file(EoS1)
+                [s1, _, _, max_mass_eos1] = get_eos_interpolant_from_mass_tidal_file(target_eos)
         else:
-            [s1, _, _, max_mass_eos1] = get_eos_interpolant(EoS1, m_min=self.min_mass)
+            [s1, _, _, max_mass_eos1] = get_eos_interpolant(target_eos, m_min=self.min_mass)
 
         # Check the return values from get_eos_interpolant(), which may return [nan, nan, nan, nan] if the
         # system is a BBH.
@@ -171,7 +156,7 @@ class ModelSelector:
             max_mass_eos1,
             N_grid=N_grid,
             min_mass=max(self.min_mass, min_mass1),
-            N_kde_trials=N_trials,
+            N_trials=N_trials,
         )
 
         evidence_2, evidences_2 = self._integrate_posterior_for_eos_support(
@@ -179,7 +164,7 @@ class ModelSelector:
             max_mass_eos2,
             N_grid=N_grid,
             min_mass=max(self.min_mass, min_mass2),
-            N_kde_trials=N_trials,
+            N_trials=N_trials,
         )
 
         bf = evidence_1 / evidence_2
@@ -191,8 +176,8 @@ class ModelSelector:
     
         if save_file is not None:
             results = {
-                'ref_eos': EoS1,
-                'target_eos': EoS1,
+                'ref_eos': ref_eos,
+                'target_eos': target_eos,
                 'bf': bf,
                 'bf_array': bf_array.tolist()
             }
@@ -202,7 +187,7 @@ class ModelSelector:
         
         return bf, bf_array
 
-    def compute_parameterized_eos_evidence(self, params, N_grid=1000) -> float:
+    def compute_parameterized_eos_evidence(self, params, N_grid=1000, parameterization="spectral") -> float:
         '''
         This method computes the evidence for a parametrized EoS.
 
@@ -214,7 +199,7 @@ class ModelSelector:
         # generate interpolator for eos
         s, _, max_mass_eos, min_mass = get_eos_interpolant_from_parameters(
             params,
-            parameterization=self.parameterization, #type: ignore
+            parameterization=parameterization, #type: ignore
             N_points=100,
         )
 
@@ -234,7 +219,7 @@ class ModelSelector:
             max_mass_eos: float,
             N_grid: int = 1000,
             min_mass: float = 0.1,
-            N_kde_trials: int = 0,
+            N_trials: int = 0,
         ) -> tuple[float, np.ndarray]:
         '''
         This function numerically integrates the KDE along the
@@ -274,13 +259,13 @@ class ModelSelector:
         prob_density = self.density_estimator.pdf(points).numpy()
         evidence = np.trapezoid(prob_density, q)
         
-        if isinstance(self.density_estimator, BayesianFlow):
-            evidences = np.array([])
+        # if isinstance(self.density_estimator, BayesianFlow):
+        #     evidences = np.array([])
                 
         # use KDE
-        elif N_kde_trials > 0 and isinstance(self.density_estimator, BoundedKDE):
-            evidences = np.empty(N_kde_trials)
-            for i in range(N_kde_trials):
+        if N_trials > 0 and isinstance(self.density_estimator, BoundedKDE):
+            evidences = np.empty(N_trials)
+            for i in range(N_trials):
                 resampled_prob_density = self.density_estimator.pdf(points, resample=True).numpy()
                 evidences[i] = np.trapezoid(resampled_prob_density, q)
         else:
@@ -292,11 +277,11 @@ class ModelSelector:
 class JointModelSelector:
     def __init__(
             self,
-            events: list[str],
+            prior_files: list[str],
+            posterior_files: list[str],
             method: Literal['2D', '3D'] = '2D',
-            prior_files: list[str] | None = None,
             density_est_method: Literal['kde', 'flow'] = 'flow',
-            parameterization: Literal['spectral', 'polytrope'] = 'spectral'
+            flow_files: list[str] | None = None
         ):
         '''
         This class takes as input a list of posterior-samples files for
@@ -307,38 +292,37 @@ class JointModelSelector:
         analysis
         '''
 
-        if prior_files is not None:
-            for file in prior_files:
-                if not os.path.exists(file):
-                    raise FileNotFoundError(f"prior file {file} does not exist")
-            self.event_priors = prior_files
-        else:
-            self.event_priors = [None] * len(events)
+        for file in prior_files + posterior_files:
+            if not os.path.exists(file):
+                raise FileNotFoundError(f"file {file} not found")
+        self.event_priors = prior_files
+        self.event_posteriors = posterior_files
 
-        # Right now the method demands a unique prior file for each event
-        # This may be changed later.
-        assert len(self.event_priors) == len(events), 'Number of prior and posterior files should be same'
-        
+        assert len(prior_files) == len(posterior_files), 'Number of prior files and posterior files should be the same'
+        if flow_files is None:
+            flow_files = [None] * len(prior_files)
+        else:
+            assert len(prior_files) == len(flow_files), 'Number of prior files and normalizing flow files should be the same'
+
         self.model_selectors = []
-        for event, prior_file in zip(events, self.event_priors):
+        for post_file, prior_file, flow_file in zip(posterior_files, prior_files, flow_files):
             self.model_selectors.append(
                 ModelSelector(
-                    event=event,
                     prior_file=prior_file,
+                    posterior_file=post_file,
                     method=method,
                     density_est_method=density_est_method,
-                    parameterization=parameterization,
+                    flow_file=flow_file
                 )
             )
         
         self.method = method
-        self.parameterization = parameterization
         self.N_events = len(self.model_selectors)
     
     def compute_joint_eos_evidence_ratio(
             self,
-            EoS1,
-            EoS2,
+            target_eos,
+            ref_eos,
             N_trials: int = 0,
             N_grid: int = 1000,
             verbose: bool = False,
@@ -350,12 +334,12 @@ class JointModelSelector:
         object, using JointModelSelector.all_bayes_factors. Uncertainty for each case can
         be accessed by using JointModelSelector.all_bayes_factors_errors.
 
-        EoS1 :: The name of the first equation of state model. This can be
+        target_eos :: The name of the first equation of state model. This can be
                 either one of the named equation of state models from LALSuite,
                 or a file containing the information of the equation of state,
                 (m, λ) or (m, r, κ).
 
-        EoS2 :: The name of the second equation of state model. This can be
+        ref_eos :: The name of the second equation of state model. This can be
                 either one of the named equation of state models from LALSuite,
                 or a file containing the information of the equation of state,
                 (m, λ) or (m, r, κ).
@@ -379,8 +363,8 @@ class JointModelSelector:
         
         for model_selector in self.model_selectors:
             result = model_selector.compute_eos_evidence_ratio(
-                EoS1,
-                EoS2,
+                target_eos,
+                ref_eos,
                 N_grid=N_grid,
                 N_trials=N_trials,
                 verbose=verbose
@@ -399,8 +383,8 @@ class JointModelSelector:
 
         if save_file is not None:
             results = {
-                'ref_eos': EoS1,
-                'target_eos': EoS1,
+                'ref_eos': ref_eos,
+                'target_eos': target_eos,
                 'joint_bf': joint_bf,
                 'joint_bf_array': joint_bf_array.tolist() if N_trials > 0 else [],
                 'all_bf': self.all_bayes_factors,
@@ -412,7 +396,7 @@ class JointModelSelector:
 
         return (joint_bf, joint_bf_array) if N_trials > 0 else joint_bf
 
-    def compute_parameterized_eos_joint_evidence(self, EoS, N_grid: int = 1000):
+    def compute_parameterized_eos_joint_evidence(self, EoS, N_grid: int = 1000, parameterization="spectral"):
         '''
         Loop through each event and compute the joint evidence.
 
@@ -427,7 +411,7 @@ class JointModelSelector:
         all_evidences = []  # To be populated by B.Fs from all events
 
         for model_selector in self.model_selectors:
-            all_evidences.append(model_selector.compute_parameterized_eos_evidence(EoS, N_grid=N_grid))
+            all_evidences.append(model_selector.compute_parameterized_eos_evidence(EoS, N_grid=N_grid, parameterization=parameterization))
 
         joint_evidence = np.prod(all_evidences)
         return joint_evidence, all_evidences
@@ -436,11 +420,13 @@ class JointModelSelector:
 class ParameterizedEoSSampler:
     def __init__(
             self, 
-            events: list[str], 
+            prior_files: list[str],
+            posterior_files: list[str],
             method: Literal['2D', '3D'],
-            prior_bounds: dict[str, dict[str, dict]],
+            eos_prior_bounds: dict[str, dict[str, dict]],
             density_est_method: Literal['kde', 'flow'] = 'flow',
-            parameterization: Literal['spectral', 'polytrope'] = 'spectral',
+            flow_files: list[str] | None = None,
+            parameterization: Literal['spectral', 'polytrope'] = 'spectral'
         ):
         '''
         Parametric EoS MCMC sampler class that stacks multiple events from 
@@ -459,14 +445,15 @@ class ParameterizedEoSSampler:
                                           
         '''
         
-        self.prior_bounds = prior_bounds
+        self.eos_prior_bounds = eos_prior_bounds
         self.parameterization = parameterization
         
         self.joint_selector = JointModelSelector(
-            events=events,
+            prior_files=prior_files,
+            posterior_files=posterior_files,
             method=method,
             density_est_method=density_est_method,
-            parameterization=parameterization,
+            flow_files=flow_files
         )
         
         if parameterization == 'spectral':
@@ -490,10 +477,10 @@ class ParameterizedEoSSampler:
         
         params = {k: np.array([par]) for k, par in zip(self.keys, parameters)}
         
-        if not is_valid_eos(params, self.prior_bounds, spectral=self.parameterization == 'spectral'):
+        if not is_valid_eos(params, self.eos_prior_bounds, spectral=self.parameterization == 'spectral'):
             return -np.inf
         
-        joint_evidence, _ = self.joint_selector.compute_parameterized_eos_joint_evidence(parameters, N_grid=N_grid)
+        joint_evidence, _ = self.joint_selector.compute_parameterized_eos_joint_evidence(parameters, N_grid=N_grid, parameterization=self.parameterization)
         log_evidence = np.log(joint_evidence)
         return log_evidence
     
@@ -510,14 +497,14 @@ class ParameterizedEoSSampler:
             gammas = np.array(
                 [
                     np.random.uniform(
-                        self.prior_bounds[k]["params"]["min"], 
-                        self.prior_bounds[k]["params"]["max"]
+                        self.eos_prior_bounds[k]["params"]["min"], 
+                        self.eos_prior_bounds[k]["params"]["max"]
                     ) for k in self.keys
                 ]
             )
             params = {k:np.array([gammas[i]]) for i, k in enumerate(self.keys)}
     
-            if is_valid_eos(params, self.prior_bounds, spectral=self.parameterization == 'spectral'):
+            if is_valid_eos(params, self.eos_prior_bounds, spectral=self.parameterization == 'spectral'):
                 if self.log_post(gammas, N_grid=10) == -np.inf:
                     continue
 
@@ -598,31 +585,7 @@ class ParameterizedEoSSampler:
     
     def load_samples(self, samples_file):
         '''
-        If the plotting function is called in post-
-        processing i.e. as part of a different script 
-        than the one that ran the sampling, then this 
-        function needs be called to load the EoS hyper-parameter
-        samples. In addition, if one wishes to make their own
-        plots using the parsed samples, they can do so by first
-        calling this method and then extracting the parsed samples
-        using parse_samples() method of this class.
-        
-        samples_file :: h5py file containing MCMC samples of 
-                    EoS hyper-parameters
-                    
-        Example:
-        
-        >>> sampler_spectral=mcmc_sampler([],  
-        {'gamma1':{'params':{"min":0.2,"max":2.00}},
-        'gamma2':{'params':{"min":-1.6,"max":1.7}},
-        'gamma3':{'params':{"min":-0.6,"max":0.6}},
-        'gamma4':{'params':{"min":-0.02,"max":0.02}}},
-        out, N_walkers=100, N_parameter_samples=10000, N_dim=4,
-        spectral=True,N_pool=16)
-        >>> sampler_spectral.load_samples('file/containing/EoS/hyperparameter/samples')
-        >>> figures = sampler_spectral.plot(p_vs_rho={'plot':True,'true_eos': None}) #for plotting using this classes plot() function. This step can be skipped if one wishes to manually the extracted samples.
-        >>> samples = sampler_spectral.parse_samples() # to extract parsed samples for manual plotting if desired
-        
+        samples_file :: h5py file containing MCMC samples of EoS hyper-parameters
         '''
         
         with h5py.File(samples_file) as f:

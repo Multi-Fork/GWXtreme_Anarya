@@ -9,7 +9,87 @@ import lal
 
 from ..GWXtreme.eos_prior import compute_log_pressure_from_eos
 from ..GWXtreme.eos_inference import ParameterizedEoSSampler
-from ..GWXtreme.config import EOS_LIST
+from ..GWXtreme.eos_inference import JointModelSelector
+from ..GWXtreme.config import EOS_LIST, LAL_NESTED_SAMPLING_PHENOM_EVIDENCES_FILE, LAL_NESTED_SAMPLING_TAYLORF2_EVIDENCES_FILE
+
+
+
+def compute_all_eos_bayes_factors(
+        model_selector: JointModelSelector,
+        EoS_names: list[str] = EOS_LIST,
+        N_trials: int = 0
+) -> dict:
+    """
+    Compute Bayes Factors for each EoS in EoS_names for a given event.
+    """
+    
+    BFs = {}
+    for EoS in EoS_names:
+        result = model_selector.compute_joint_eos_evidence_ratio(
+            target_eos=EoS,
+            ref_eos="SLY",
+            N_grid=1000,
+            N_trials=N_trials
+        )
+
+        if type(result) != tuple: # no repeated trials are returned
+            bf = result
+            bf_trials = []
+        else:
+            bf, bf_trials = result
+            bf_trials = bf_trials.tolist()
+        
+        BFs[EoS] = {
+            "native": bf,
+            "resamples": bf_trials
+        }
+    
+    return BFs
+
+
+def compute_bayes_factors_from_nested_sampling_evidences(waveform: str) -> dict:
+    evidences_file = LAL_NESTED_SAMPLING_TAYLORF2_EVIDENCES_FILE if waveform == "TaylorF2" else LAL_NESTED_SAMPLING_PHENOM_EVIDENCES_FILE
+    # Opens files that originate from a single file with GW170817's nested sampling
+    # evidences for each EoS. We compute the BFs w.r.t. SLY and try out multiple 
+    # variations on its "error": 
+    # 1) quadrature sum
+    # 2) "worst possible error"
+    # 3) fractional error
+    with open(evidences_file) as f:
+        evidences = json.load(f)
+
+    bayes_factors = {waveform: {}}
+    # Compute BFs from evidences from nested sampling inference
+    for EoS in EOS_LIST:
+        EoS1 = evidences[EoS][0] # evidence of EoS1
+        EoS2 = evidences['SLY'][0] # evidence of EoS2
+        BF = EoS1/EoS2
+
+        EoS1err = evidences[EoS][-1]
+        EoS2err = evidences['SLY'][-1]
+
+        # 1) quadrature sum
+        err1 = ((EoS1err**2) + (EoS2err**2))**0.5
+
+        # 2) "worst possible error"
+        EoS1min, EoS1max = EoS1-EoS1err, EoS1+EoS1err
+        EoS2min, EoS2max = EoS2-EoS2err, EoS2+EoS2err
+
+        ErrMin = EoS1max/EoS2min
+        ErrMax = EoS1min/EoS2max
+        err2 = ErrMax - ErrMin
+
+        # 3) fractional error
+        err3 = BF * (((EoS1err/EoS1)**2) + ((EoS2err/EoS2)**2)) ** 0.5
+        
+        bayes_factors[waveform][EoS] = {
+            "bf": BF, 
+            "quad_error": err1,
+            "worst_error": err2,
+            "fractional_error": err3
+        }
+    
+    return bayes_factors
 
 
 def plot_bayes_factors_bar_chart(
@@ -148,6 +228,7 @@ def plot_eos_constraints(
 
 
 def plot_parameterized_eos_posterior(
+        sampler: ParameterizedEoSSampler,
         samples_files: list[str],
         labels: list[str],
         save_file: str,
@@ -157,8 +238,6 @@ def plot_parameterized_eos_posterior(
     assert len(samples_files) <= 3
     colors = ["#2D199A","#33af37","#ea7164"]
     fig, ax = plt.subplots(2, 2, figsize=(10, 10))
-
-    sampler = ParameterizedEoSSampler(['GW170817'], '2D', prior_bounds={})
     
     for file, label, color in zip(samples_files, labels, colors):
         sampler.load_samples(samples_file=file)
