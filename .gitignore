@@ -6,6 +6,5 @@ dist/
 .DS_Store
 .ipynb_checkpoints
 __pycache__
-*.pkl
 *.dat
 *train_summary.txt

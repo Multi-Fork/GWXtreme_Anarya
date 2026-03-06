@@ -1,6 +1,4 @@
 from typing import Literal
-import pathlib
-import time
 
 import numpy as np
 import torch
@@ -11,74 +9,6 @@ import matplotlib.collections
 import matplotlib.pyplot as plt
 
 from .utils import get_gw_event_pe_posterior_samples
-
-
-def learn_flow(
-    data: torch.Tensor,
-    flow,
-    optimizer,
-    N_epochs: int,
-    batch_size: int,
-    save_file: str,
-    stop_early_if_no_improvement_in_n_epochs: int = 0, 
-) -> list:  
-    assert pathlib.Path(save_file).parent.exists(), "directory for given save_file doesn't exist"
-    training_summary = f"data.shape: {data.shape}\nflow: {flow}\noptimizer: {optimizer}\nN_epochs: {N_epochs}\nbatch_size: {batch_size}\n"            
-
-    train_loader = torch.utils.data.DataLoader(
-        dataset=torch.utils.data.TensorDataset(data),
-        batch_size=batch_size, 
-        shuffle=True
-    )
-
-    start = time.perf_counter()
-    epoch_mean_losses = []
-    minimum_epoch_mean_loss = torch.inf
-    best_epoch = 0
-    for epoch in range(N_epochs + 1):
-        losses = []
-
-        for d in train_loader:
-            # minimize expected KL divergence
-            loss = -flow().log_prob(torch.stack(d)).mean() # -log p(x)
-            if not torch.isfinite(loss).item():
-                print(f'Aborting: loss = nan at epoch {epoch}.')
-                return epoch_mean_losses
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            losses.append(loss.detach())
-        
-        losses = torch.stack(losses)
-        epoch_mean_loss = losses.mean().item()
-        epoch_mean_losses.append(epoch_mean_loss)
-
-        if epoch % 10 == 0:
-            progress = f"[{epoch:6d} / {N_epochs}]\tavg. loss = {epoch_mean_loss:3.4f} +- {losses.std().item():3.4f}"
-            training_summary += f"{progress}\n"
-            print(f'{progress}')
-        
-        if stop_early_if_no_improvement_in_n_epochs > 0:
-            if epoch_mean_loss < minimum_epoch_mean_loss:
-                minimum_epoch_mean_loss = epoch_mean_loss
-                best_epoch = epoch
-            else:
-                if epoch - best_epoch >= stop_early_if_no_improvement_in_n_epochs:
-                    print(f'Stopping early - no improvement in loss after {stop_early_if_no_improvement_in_n_epochs} epochs.')
-                    break
-    
-    end = time.perf_counter()
-    torch.save(flow, save_file)
-
-    training_summary += f"\ntrain time: {(end - start) / 60:.2f} minutes"
-    
-    model_save_file = pathlib.Path(save_file)
-    summary_save_file = model_save_file.parent.joinpath(model_save_file.stem + '_train_summary.txt')
-    summary_save_file.touch(exist_ok=True)
-    summary_save_file.write_text(training_summary)
-
-    return epoch_mean_losses
 
 
 def plot_probability(box_probs: torch.Tensor, title: str, save_file: str | None = None):    
@@ -177,6 +107,7 @@ def _scale_down(x: torch.Tensor, lambdat_max=None, lambda1_max=None, lambda2_max
 
     return w
 
+
 def _scale_up(w: torch.Tensor, lambdat_max=None, lambda1_max=None, lambda2_max=None) -> torch.Tensor:
     assert w.ndim == 2, 'w should be an (N, D) shaped Tensor'
     assert w.shape[-1] in (2, 3), 'last dimension of w must be size 2 or 3'
@@ -198,12 +129,14 @@ def _scale_up(w: torch.Tensor, lambdat_max=None, lambda1_max=None, lambda2_max=N
         )
     return x
 
+
 def _scale_jacobian(lambdat_max=None, lambda1_max=None, lambda2_max=None):
     if lambdat_max is not None:
         return 1 / lambdat_max
     else:
         assert lambda1_max is not None and lambda2_max is not None
         return 1 / (lambda1_max * lambda2_max)
+
 
 class NormalizingFlow:
     def __init__(
