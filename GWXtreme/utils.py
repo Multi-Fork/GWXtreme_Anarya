@@ -84,10 +84,10 @@ def apply_mass_constraint(m1, m2, q, minMass):
     return (m1, m2, q)
 
 
-def get_eos_interpolant(EoS: str, m_min: float = 1.0, N_points: int = 100):
+def get_eos_interpolant(EoS: str, m_min: float = 1.0, N_points: int = 100) -> tuple[scipy.interpolate.interp1d, float]:
     '''
     This method accepts one of the NS native equations of state
-    and uses that to return a list [s, mass, Λ, max_mass] where
+    and uses that to return  (s, max_mass) where
     s is the interpolation function for the mass and the tidal
     deformability.
 
@@ -115,7 +115,7 @@ def get_eos_interpolant(EoS: str, m_min: float = 1.0, N_points: int = 100):
 
     # if max_mass of EoS is smaller than population's min mass, they're all BBHs
     # if definition of max_mass or m_min is changed in the future, adjust this logic accordingly
-    if max_mass < m_min: return [np.nan, np.nan, np.nan, np.nan]
+    if max_mass < m_min: return [None, np.nan]
 
     masses = np.linspace(m_min, max_mass, N_points)
     masses = masses[masses <= max_mass]
@@ -123,7 +123,7 @@ def get_eos_interpolant(EoS: str, m_min: float = 1.0, N_points: int = 100):
     grav_masses, Lambdas = get_eos_lambdas_from_masses(masses, fam)
 
     s = scipy.interpolate.interp1d(grav_masses, Lambdas)
-    return s, grav_masses, Lambdas, max_mass
+    return s, max_mass
 
 
 def get_eos_interpolant_from_parameters(
@@ -131,10 +131,10 @@ def get_eos_interpolant_from_parameters(
         parameterization: Literal['spectral', 'polytrope'],
         N_points: int = 100,
         m_min: float = 0.8
-    ):
+    ) -> tuple[scipy.interpolate.interp1d, float, float]:
     '''
     This method accepts a four parameter description of the neutron star 
-    equation of state, and returns a list [s, masses, max_mass, min_mass] where s is 
+    equation of state, and returns (s, max_mass, min_mass) where s is 
     the interpolation function for the mass and the tidal deformability.
 
     params      :: Four parameter list.
@@ -166,10 +166,10 @@ def get_eos_interpolant_from_parameters(
     
     s = scipy.interpolate.interp1d(x=grav_masses, y=lambdas)
     
-    return s, grav_masses, max_mass, max(m_min, min_mass)
+    return s, max_mass, max(m_min, min_mass)
 
 
-def get_eos_interpolant_from_mass_tidal_file(mass_tidal_file):
+def get_eos_interpolant_from_mass_tidal_file(mass_tidal_file: str) -> tuple[scipy.interpolate.interp1d, float]:
     '''
     This method accepts the data from a file that has the
     tidal deformability information in the following format:
@@ -186,17 +186,17 @@ def get_eos_interpolant_from_mass_tidal_file(mass_tidal_file):
     tidal deformability λ should be supplied in SI unit.
 
     The method computes the dimensionless tidal deformabiliy Λ and
-    returns a list [s, mass, Λ, max_mass] where s is the interpolation
+    returns (s, max_mass) where s is the interpolation
     function for the mass and the tidal deformability.
     '''
     masses, lambdas = np.loadtxt(mass_tidal_file, unpack=True)
     Lambdas = lal.G_SI*lambdas*(1/(lal.MRSUN_SI*masses)**5)
     s = scipy.interpolate.interp1d(masses, lambdas)
     max_mass = np.max(masses)
-    return [s, masses, Lambdas, max_mass]
+    return s, max_mass
 
 
-def get_eos_interpolant_from_mass_radius_file(MRFile):
+def get_eos_interpolant_from_mass_radius_file(MRFile: str) -> tuple[scipy.interpolate.interp1d, float]:
     '''
     This method accepts the data from a file that have the
     mass-radius-love deformability information in the following format:
@@ -213,7 +213,7 @@ def get_eos_interpolant_from_mass_radius_file(MRFile):
     tidal deformability radius should be supplied in meters.
 
     The method computes the dimensionless tidal deformabiliy Λ and
-    returns a list [s, mass, Λ, max_mass] where s is the interpolation
+    returns (s, max_mass) where s is the interpolation
     function for the mass and the tidal deformability.
     '''
     masses, radius, kappa = np.loadtxt(MRFile, unpack=True)
@@ -221,7 +221,7 @@ def get_eos_interpolant_from_mass_radius_file(MRFile):
     Lambdas = (2/3)*kappa / (compactness**5)
     s = scipy.interpolate.interp1d(masses, Lambdas)
     max_mass = np.max(masses)
-    return [s, masses, Lambdas, max_mass]
+    return s, max_mass
 
 
 def get_eos_lambdas_from_masses(masses: np.ndarray, eos_fam) -> tuple[np.ndarray, np.ndarray]:

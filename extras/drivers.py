@@ -51,8 +51,7 @@ def compute_all_eos_bayes_factors(
     return BFs
 
 
-def compute_bayes_factors_from_nested_sampling_evidences(waveform: str) -> dict:
-    evidences_file = LAL_NESTED_SAMPLING_TAYLORF2_EVIDENCES_FILE if waveform == "TaylorF2" else LAL_NESTED_SAMPLING_PHENOM_EVIDENCES_FILE
+def compute_bayes_factors_from_nested_sampling_evidences(evidences_file: str) -> dict:
     # Opens files that originate from a single file with GW170817's nested sampling
     # evidences for each EoS. We compute the BFs w.r.t. SLY and try out multiple 
     # variations on its "error": 
@@ -62,7 +61,7 @@ def compute_bayes_factors_from_nested_sampling_evidences(waveform: str) -> dict:
     with open(evidences_file) as f:
         evidences = json.load(f)
 
-    bayes_factors = {waveform: {}}
+    bayes_factors = {}
     # Compute BFs from evidences from nested sampling inference
     for EoS in EOS_LIST:
         EoS1 = evidences[EoS][0] # evidence of EoS1
@@ -86,7 +85,7 @@ def compute_bayes_factors_from_nested_sampling_evidences(waveform: str) -> dict:
         # 3) fractional error
         err3 = BF * (((EoS1err/EoS1)**2) + ((EoS2err/EoS2)**2)) ** 0.5
         
-        bayes_factors[waveform][EoS] = {
+        bayes_factors[EoS] = {
             "bf": BF, 
             "quad_error": err1,
             "worst_error": err2,
@@ -97,22 +96,22 @@ def compute_bayes_factors_from_nested_sampling_evidences(waveform: str) -> dict:
 
 
 def plot_bayes_factors_bar_chart(
-        bayes_factors_file: str,      # .json
-        method_sets: list[tuple],
+        bayes_factors: dict,      # .json
         save_file: str,
         yscale: str = 'linear',
-        error_type: Literal['std', '2std', 'range'] = 'range',
         EoS_list: list[str] = EOS_LIST
-):
-    with open(bayes_factors_file) as f:
-        data = json.load(f)
-    
-    num_methods = len(method_sets)
-    if num_methods > 3:
-        raise UserWarning("More than 3 BFs methods not supported for plotting.")
+):  
+    num_methods = len(bayes_factors)
+    if num_methods > 4:
+        raise UserWarning("More than 4 BF sets / methods not supported for plotting.")
         
-    colors = ["#f94b42", "#c8c0ff", "#ffa551"]
-    spacing = [-.10, .10] if num_methods == 2 else [-.20, .0, .20]
+    colors = ["#f94b42", "#c8c0ff", "#ffa551", "#0d741b"]
+    spacing_options = {
+        2: [-.10, .10],
+        3: [-.20, .0, .20],
+        4: [-.30, -.10, .10, .30]
+    }
+    spacing = spacing_options[num_methods]
    
     plt.clf()
     plt.rcParams.update({"font.size":18})
@@ -120,49 +119,14 @@ def plot_bayes_factors_bar_chart(
 
     x_axis = np.arange(len(EoS_list))
 
-    labels = []
     all_bars = []
     all_uncerts = []
-    for i, method_set in enumerate(method_sets):
-        method, waveform, density_est_method = method_set
-        label = f"{method} {density_est_method} {waveform}"
-        labels.append(label)
-
+    for i, label in zip(range(num_methods), bayes_factors.keys()):
         BFs = []
         uncerts = []
-
         for eos in EoS_list:
-            eos_bfs = data[method][waveform][density_est_method][eos]
-            
-            # normalizing flow results
-            if density_est_method == 'flow':
-                BFs.append(eos_bfs["native"])
-                ensemble = np.array(eos_bfs["ensemble"])
-                ensemble = ensemble[~np.isnan(ensemble)] 
-                
-                if error_type == '2std':                
-                    uncerts.append(2 * np.std(ensemble))
-                elif error_type == 'std':
-                    uncerts.append(np.std(ensemble))
-                elif error_type == 'range':
-                    uncerts.append(np.max(ensemble) - np.min(ensemble))
-            
-            # nested sampling results
-            elif density_est_method == 'lal':
-                BFs.append(eos_bfs["bf"])
-                uncerts.append(np.abs(eos_bfs["worst_error"]))
-            
-            # kde results
-            else:
-                BFs.append(eos_bfs["native"])
-                resamples = eos_bfs["resamples"]
-                
-                if error_type == '2std':                
-                    uncerts.append(2 * np.std(resamples))
-                elif error_type == 'std':
-                    uncerts.append(np.std(resamples))
-                elif error_type == 'range':
-                    uncerts.append(np.max(resamples) - np.min(resamples))
+            BFs.append(bayes_factors[label][eos]['bf'])
+            uncerts.append(bayes_factors[label][eos]['bf_error'])
 
         plt.bar(
             x=x_axis + spacing[i],
@@ -282,7 +246,7 @@ def plot_lambdas_from_spectral_eos_parameters(
         EoS: str = "APR4_EPP"
 ):
     m = 1.4
-    eos = lalsim.SimNeutronStarEOSByName(eos_name)
+    eos = lalsim.SimNeutronStarEOSByName(EoS)
     fam = lalsim.CreateSimNeutronStarFamily(eos)
 
     rr = lalsim.SimNeutronStarRadius(m*lal.MSUN_SI, fam)
@@ -315,7 +279,7 @@ def plot_max_masses_from_spectral_eos_parameters(
         EoS: str = "APR4_EPP",
 ):
     m = 1.4
-    eos = lalsim.SimNeutronStarEOSByName(eos_name)
+    eos = lalsim.SimNeutronStarEOSByName(EoS)
     fam = lalsim.CreateSimNeutronStarFamily(eos)
     eosMaxMass = lalsim.SimNeutronStarMaximumMass(fam)/lal.MSUN_SI
 
@@ -432,8 +396,6 @@ def train_bayesian_normalizing_flow(
     
     start = time.perf_counter()
     epoch_mean_losses = []
-    # minimum_epoch_mean_loss = torch.inf
-    # best_epoch = 0
     for epoch in range(N_epochs):
         losses = []
 

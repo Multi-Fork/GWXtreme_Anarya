@@ -138,17 +138,20 @@ def _scale_jacobian(lambdat_max=None, lambda1_max=None, lambda2_max=None):
         return 1 / (lambda1_max * lambda2_max)
 
 
-class NormalizingFlow:
+class BayesianNormalizingFlow:
     def __init__(
             self,
             flow_file: str,
+            bound_method: Literal['transform', 'reflect'],
             posterior_file: str,
             method: Literal['2D', '3D'] = '2D'
     ):    
         assert method in ['2D', '3D'], "method must be one of ['2D', '3D']"
         self.method = method
         
-        self.flow = torch.load(flow_file, weights_only=False)
+        self.bayesian_flow = torch.load(flow_file, weights_only=False)
+        self.flow = self.bayesian_flow.sample_model()
+        self.bound_method = bound_method
 
         # Need everything else below if reflection method is used for bounding output
         # instead of transformation method (default).
@@ -168,11 +171,11 @@ class NormalizingFlow:
     def set_flow_model(self, flow_file: str):
         self.flow = torch.load(flow_file, weights_only=False)
 
-    def sample(self, size: int, bound_method="transform") -> torch.Tensor:
-        if bound_method == "transform":
+    def sample(self, size: int) -> torch.Tensor:
+        if self.bound_method == "transform":
             z = self.flow().sample([size])
             x = _to_data_space(z)
-        elif bound_method == "reflect":
+        elif self.bound_method == "reflect":
             w = self.flow().sample([size])
             if w.shape[-1] == 2:
                 x = _scale_up(w, lambdat_max=self.posterior_samples[0].max())
@@ -180,40 +183,48 @@ class NormalizingFlow:
                 x = _scale_up(w, lambda1_max=self.posterior_samples[0].max(), lambda2_max=self.posterior_samples[2].max())
         return x
 
-    def log_pdf(self, x: torch.Tensor, bound_method="transform") -> torch.Tensor:
-        if bound_method == "transform":
+    def log_pdf(self, x: torch.Tensor, resample: bool = False) -> torch.Tensor:
+        if resample:
+            flow = self.bayesian_flow.sample_model()
+        else:
+            flow = self.flow
+        if self.bound_method == "transform":
             z = _to_latent_space(x)
             ladj = _get_log_abs_det_jacobian(x)
-            lp = self.flow().log_prob(z).detach() + ladj
+            lp = flow().log_prob(z).detach() + ladj
             lp = torch.nan_to_num(lp, nan=-torch.inf)
             return lp
-        elif bound_method == "reflect":
-            return torch.log(self.pdf(x, bound_method="reflect"))
+        elif self.bound_method == "reflect":
+            return torch.log(self.pdf(x, resample=resample))
         else:
             raise NotImplementedError()
     
-    def pdf(self, x: torch.Tensor, bound_method="transform") -> torch.Tensor:
-        if bound_method == "transform":
-            return torch.exp(self.log_pdf(x))
-        elif bound_method == "reflect":
+    def pdf(self, x: torch.Tensor, resample: bool = False) -> torch.Tensor:
+        if resample:
+            flow = self.bayesian_flow.sample_model()
+        else:
+            flow = self.flow
+        if self.bound_method == "transform":
+            return torch.exp(self.log_pdf(x, resample=resample))
+        elif self.bound_method == "reflect":
             if x.shape[-1] == 2:
                 w = _scale_down(x, lambdat_max=self.posterior_samples[0].max())
             else:
                 w = _scale_down(x, lambda1_max=self.posterior_samples[0].max(), lambda2_max=self.posterior_samples[2].max())
-            p = torch.exp(self.flow().log_prob(w).detach())
+            p = torch.exp(flow().log_prob(w).detach())
             
             for i, (low, high) in enumerate(zip(self.low, self.high)):                
                 if torch.isfinite(low):
                     reflect_w = w.clone()
                     reflect_w[:, i] = 2.0 * low - w[:, i]
 
-                    p += torch.exp(self.flow().log_prob(reflect_w).detach())
+                    p += torch.exp(flow().log_prob(reflect_w).detach())
 
                 if torch.isfinite(high):
                     reflect_w = w.clone()
                     reflect_w[:, i] = 2.0 * high - w[:, i]
 
-                    p += torch.exp(self.flow().log_prob(reflect_w).detach())
+                    p += torch.exp(flow().log_prob(reflect_w).detach())
 
             # jacobian of transformation to whitened space
             if x.shape[-1] == 2:
